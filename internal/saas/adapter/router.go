@@ -627,7 +627,13 @@ func Mount(engine *gin.Engine, store *db.DB, authH *saasauth.Handler, tokensH *t
 		)
 		now := time.Now()
 		nowU := now.Unix()
-		recentStart := nowU - int64(recentSlots)*recentSlotS
+		// Slot boundaries are aligned to the epoch, not to "now minus 24h".
+		// Unaligned they slide by a second on every refresh, and — the reason
+		// this had to change — the shed overlay below buckets in SQL with
+		// (ts/width)*width, which IS epoch-aligned, so an unaligned strip never
+		// matched a single bucket and the overlay was silently always empty.
+		// The last slot is the one in progress, so the strip still ends at now.
+		recentStart := (nowU/recentSlotS)*recentSlotS - int64(recentSlots-1)*recentSlotS
 
 		// Current status per provider from the live model_health rows.
 		curr, _ := store.ListModelHealth(c.Request.Context())
