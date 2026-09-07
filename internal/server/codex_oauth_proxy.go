@@ -650,7 +650,38 @@ func codexPreambleEvent(payload []byte) bool {
 	if json.Unmarshal(payload, &ev) != nil {
 		return false
 	}
-	return ev.Type == "response.created" || ev.Type == "response.in_progress"
+	return codexContentFreeEvents[ev.Type]
+}
+
+// codexContentFreeEvents are the Responses events that carry no model-visible
+// text. Everything here can be replayed by a retry, so holding it back costs
+// the client nothing and keeps the response uncommitted for longer.
+//
+// The captured opening sequence (crack/codexapp0.147.0/rows/13-ws-server-events)
+// runs:
+//
+//	response.created → response.in_progress → response.output_item.added
+//	→ response.content_part.added → response.output_text.delta
+//
+// with the first four carrying no text and the delta being the first thing a
+// user could actually see. Only the first two were listed here, so a capacity
+// shed arriving during the two `.added` events — a window that is wide, because
+// it spans the model's entire time-to-first-token — was treated as
+// unrecoverable and forwarded to the client as "Our servers are currently
+// overloaded", when it could have been withheld and retried on another
+// credential.
+//
+// The rule is `.added`-style declarations plus the two openers: an `.added`
+// event announces a container (an output item, a content part, a reasoning
+// summary part) whose text always arrives afterwards in a `.delta`. It is an
+// explicit list rather than a suffix match so that a future event type has to
+// be read and classified rather than silently inheriting this behaviour.
+var codexContentFreeEvents = map[string]bool{
+	"response.created":                      true,
+	"response.in_progress":                  true,
+	"response.output_item.added":            true,
+	"response.content_part.added":           true,
+	"response.reasoning_summary_part.added": true,
 }
 
 // codexStreamResult reports the outcome of a Codex backend SSE relay so the
