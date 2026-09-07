@@ -51,3 +51,20 @@ func TestCodexPreambleFailsClosed(t *testing.T) {
 		}
 	}
 }
+
+// The keepalive is not part of the opening sequence — it is what upstream sends
+// while a turn sits waiting for capacity, roughly every 30s — and it is where
+// the pre-output failover was actually being lost. Every sampled production
+// shed had the shape
+//
+//	response.created → response.in_progress → keepalive(31s) → error → response.failed
+//
+// so the heartbeat committed the stream a fraction of a second before the shed
+// it was announcing, leaving the shed with nowhere to go but the client. The
+// frame carries no text and no response id, so a retry reproduces the stream
+// exactly.
+func TestCodexPreambleWithholdsTheCapacityKeepalive(t *testing.T) {
+	if !codexPreambleEvent([]byte(`{"type":"keepalive","sequence_number":2}`)) {
+		t.Error("a keepalive carries no model text; committing on it forecloses the failover the shed needs")
+	}
+}

@@ -663,7 +663,8 @@ func codexTerminalEvent(payload []byte) bool {
 }
 
 // codexPreambleEvent reports whether a Codex SSE payload is one of the
-// content-free events upstream always opens with. They carry no model output,
+// content-free events — the ones upstream opens with, plus the keepalive it
+// emits while a turn waits for capacity. They carry no model output,
 // so holding them back costs the client nothing — and it keeps the response
 // uncommitted long enough for a capacity shed to be withheld and failed over
 // instead of being forwarded as an error the user has to see.
@@ -700,13 +701,44 @@ func codexPreambleEvent(payload []byte) bool {
 // summary part) whose text always arrives afterwards in a `.delta`. It is an
 // explicit list rather than a suffix match so that a future event type has to
 // be read and classified rather than silently inheriting this behaviour.
+//
+// `keepalive` is the one that is not part of that opening sequence, and it is
+// the one that mattered most in production. When the backend cannot schedule a
+// turn it parks the request and emits `event: keepalive` /
+// `data: {"type":"keepalive","sequence_number":N}` about every 30s, then sheds
+// the turn a fraction of a second after one of those heartbeats. Three sampled
+// sheds all had the identical shape:
+//
+//	response.created → response.in_progress → keepalive(31s) → error → response.failed
+//
+// The heartbeat carries no model output and no response id — it is replayable
+// by definition — but it was not listed here, so it committed the response and
+// the shed 0.4s behind it could only be demoted and handed to the client as
+// "Our servers are currently overloaded". That is what the user sees as a
+// reconnect. It accounted for essentially all of the unrecoverable sheds: of
+// 510 shed turns in one six-hour window, 443 were never retried at all.
 var codexContentFreeEvents = map[string]bool{
 	"response.created":                      true,
 	"response.in_progress":                  true,
 	"response.output_item.added":            true,
 	"response.content_part.added":           true,
 	"response.reasoning_summary_part.added": true,
+	"keepalive":                             true,
 }
+
+// codexPreOutputWithholdCap bounds how long the pre-output window may stay
+// withheld. Buffering the opening events costs the client nothing except
+// silence, and silence is exactly what upstream's keepalive was there to
+// prevent — so holding those heartbeats back trades a visible reconnect for a
+// quiet socket, and that trade has to be finite.
+//
+// Four minutes sits under the five-minute idle deadline Codex clients use on a
+// Responses stream (CLIProxyAPI pins its socket read deadline there), while
+// still covering the whole observed shed distribution: the slowest shed in a
+// 24h sample of 1861 landed well inside it. Past the cap the withhold is
+// abandoned, the buffer is flushed in upstream's original order, and the turn
+// behaves exactly as it did before any of this existed.
+const codexPreOutputWithholdCap = 4 * time.Minute
 
 // codexStreamResult reports the outcome of a Codex backend SSE relay so the
 // caller can choose between a transparent retry (nothing reached the client
@@ -757,6 +789,8 @@ func streamSSECodexBackend(c *gin.Context, resp *http.Response, counts *usage.Co
 	flusher, _ := c.Writer.(http.Flusher)
 	reader := newLineReader(resp.Body)
 	out := codexStreamResult{}
+	// Start of the withhold window — see codexPreOutputWithholdCap.
+	withholdStart := time.Now()
 
 	// shedding latches once a capacity/quota error frame is seen before any
 	// output has reached the client. From that point the rest of the stream is
@@ -772,8 +806,9 @@ func streamSSECodexBackend(c *gin.Context, resp *http.Response, counts *usage.Co
 	// to withhold, so an event line is held until its data line is classified
 	// and then emitted together with it.
 	var held []byte
-	// preamble buffers the content-free opening events (response.created,
-	// response.in_progress) until the stream reveals what it is.
+	// preamble buffers the content-free events (response.created,
+	// response.in_progress, and the keepalives upstream sends while a turn
+	// waits for capacity) until the stream reveals what it is.
 	//
 	// Without this the withhold above never fires in practice: upstream always
 	// opens with response.created, forwarding it commits the response, and the
@@ -785,8 +820,7 @@ func streamSSECodexBackend(c *gin.Context, resp *http.Response, counts *usage.Co
 	// only for the gap between response.created and the first real event. The
 	// cost is that Relay's keepalive does not start until the first byte, so
 	// that gap runs unprotected; it is bounded by upstream sending literally
-	// anything else, and a shed — the case this exists for — lands at a median
-	// of 3.3s.
+	// anything else, and by codexPreOutputWithholdCap.
 	var preamble []byte
 
 	next := func() (emit []byte, terminal bool, err error) {
@@ -850,7 +884,8 @@ func streamSSECodexBackend(c *gin.Context, resp *http.Response, counts *usage.Co
 						// Buffer a content-free opener instead of emitting it,
 						// so it does not count as output and foreclose failover.
 						// Anything else falls through and flushes the buffer.
-						if !sentAny && !shedding && codexPreambleEvent(payload) {
+						if !sentAny && !shedding && codexPreambleEvent(payload) &&
+							time.Since(withholdStart) < codexPreOutputWithholdCap {
 							if scrubbed, keep := downstream.ScrubCodexSSELine(line); keep {
 								preamble = append(preamble, held...)
 								preamble = append(preamble, scrubbed...)
