@@ -1702,6 +1702,7 @@ export default {
     recentWindow: "Last 24 hours · 10-minute checks",
     dailyWindow: "Last 30 days · daily",
     noData: "no data",
+    unstable: "unstable — {{pct}}% of requests were retried upstream",
     claudeName: "Claude API",
     claudeSub: "Anthropic — claude-haiku probe covering all Claude models",
     codexName: "Codex API",

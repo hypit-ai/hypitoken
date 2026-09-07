@@ -12,6 +12,11 @@ interface Slot {
   from: number; // unix seconds
   ok: number;
   total: number;
+  // Real customer traffic in the slot, absent when nobody asked. The probe
+  // above answers "was a synthetic request served"; these answer "did real
+  // turns have to be retried", which is what a user actually felt.
+  reqs?: number;
+  shed?: number;
 }
 interface DayStat {
   date: number; // unix seconds (midnight)
@@ -171,6 +176,8 @@ function ProviderCard({ p }: { p: ProviderMon }) {
               total: s.total,
               ts: s.from,
               kind: "slot" as const,
+              reqs: s.reqs,
+              shed: s.shed,
             }))}
             slotCount={144}
           />
@@ -226,6 +233,28 @@ interface StripSlot {
   total: number;
   ts: number;
   kind: "slot" | "day";
+  reqs?: number;
+  shed?: number;
+}
+
+// shedUnstable is the share of real requests upstream shed before a slot is
+// drawn amber rather than green.
+//
+// 15% because the ordinary background is a few percent and a bad window runs
+// 25-30%: low enough to catch a genuinely rough period, high enough that the
+// strip is not permanently yellow. minShedSample keeps one shed out of three
+// requests from painting a quiet slot.
+const shedUnstable = 0.15;
+const minShedSample = 8;
+
+// slotUnstable reports whether real traffic struggled in a slot the probe
+// still called healthy. A shed turn is usually retried onto another credential
+// and succeeds, so it never shows up as an outage — the user just waited
+// longer. Amber is the honest colour for that: not down, not fine.
+function slotUnstable(s: StripSlot): boolean {
+  if (s.reqs === undefined || s.shed === undefined) return false;
+  if (s.reqs < minShedSample) return false;
+  return s.shed / s.reqs >= shedUnstable;
 }
 
 function slotFill(s: StripSlot): string {
@@ -236,8 +265,11 @@ function slotFill(s: StripSlot): string {
     if (r >= 0.95) return FILL_PARTIAL;
     return FILL_FAIL;
   }
-  // 10-min slot: up if any credential was healthy in the window.
-  return s.ok > 0 ? FILL_OK : FILL_FAIL;
+  // 10-min slot: up if any credential was healthy in the window. A slot that
+  // was up but where real traffic was being shed is drawn amber — the probe
+  // and the customers disagreed, and the customers are the ones to believe.
+  if (s.ok === 0) return FILL_FAIL;
+  return slotUnstable(s) ? FILL_PARTIAL : FILL_OK;
 }
 
 function UptimeStrip({
@@ -303,6 +335,14 @@ function UptimeStrip({
             // credential-pool size on the public page.
             const pct = s.total > 0 ? Math.round((s.ok / s.total) * 100) : null;
             title = s.total === 0 ? `${when} — ${t("status.noData")}` : `${when} — ${pct}%`;
+            // An amber slot needs saying out loud: the service was up, so the
+            // percentage above reads fine, and the reason it is not green is
+            // that real turns were being retried.
+            if (slotUnstable(s)) {
+              title += ` · ${t("status.unstable", {
+                pct: Math.round(((s.shed ?? 0) / (s.reqs ?? 1)) * 100),
+              })}`;
+            }
           }
           return (
             // biome-ignore lint/suspicious/noArrayIndexKey: positional bar chart — index IS the stable position (left=oldest, right=newest)

@@ -713,8 +713,44 @@ func Mount(engine *gin.Engine, store *db.DB, authH *saasauth.Handler, tokensH *t
 					ag.okCount++
 				}
 			}
+			// Overlay real traffic onto the probe's verdict.
+			//
+			// The strip is built from health-probe samples, which answer "did a
+			// synthetic request succeed". That stays green straight through a
+			// capacity shed: the probe is one small request and the shed lands
+			// on real turns under real load. Production had gpt-6-astra shedding
+			// 30.7% of turns while this page reported the provider operational,
+			// because the probe aims at gpt-5.6-sol.
+			//
+			// So each slot also carries what actually happened to customer
+			// traffic in it. Slots with no traffic are left alone — the map is
+			// sparse on purpose, so "nobody asked" stays distinct from "people
+			// asked and it was fine".
+			shedByStart := map[int64]requestlog.ShedBucket{}
+			if logDir != "" {
+				if st, err := requestlog.OpenStoreForRead(logDir); err == nil {
+					buckets, berr := st.ShedBucketsSince(pv.key,
+						time.Unix(recentStart, 0), time.Duration(recentSlotS)*time.Second)
+					if berr == nil {
+						for _, b := range buckets {
+							shedByStart[b.Start.Unix()] = b
+						}
+					}
+					st.Close()
+				}
+			}
+
 			for i := 0; i < recentSlots; i++ {
-				recent[i] = gin.H{"from": recentStart + int64(i)*recentSlotS, "ok": rOK[i], "total": rTot[i]}
+				from := recentStart + int64(i)*recentSlotS
+				slot := gin.H{"from": from, "ok": rOK[i], "total": rTot[i]}
+				if b, ok := shedByStart[from]; ok && b.Requests > 0 {
+					// Counts, not a rate: the threshold for "unstable" is a
+					// presentation decision and belongs with the thing that
+					// draws the strip, not with the thing that measures it.
+					slot["reqs"] = b.Requests
+					slot["shed"] = b.Shed
+				}
+				recent[i] = slot
 			}
 			todayMidnight := (nowU / daySec) * daySec
 			daily := make([]gin.H, dailyDays)

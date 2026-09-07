@@ -1661,6 +1661,7 @@ export default {
     recentWindow: "最近 24 小时 · 每 10 分钟",
     dailyWindow: "最近 30 天 · 按天",
     noData: "无数据",
+    unstable: "不稳定 — {{pct}}% 的请求在上游被重试",
     claudeName: "Claude API",
     claudeSub: "Anthropic — 使用 claude-haiku 探针，覆盖所有 Claude 模型",
     codexName: "Codex API",

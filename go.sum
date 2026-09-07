@@ -117,8 +117,8 @@ github.com/twitchyliquid64/golang-asm v0.15.1 h1:SU5vSMR7hnwNxj24w34ZyCi/FmDZTkS
 github.com/twitchyliquid64/golang-asm v0.15.1/go.mod h1:a1lVb/DtPvCB8fslRZhAngC2+aY1QWCk3Cedj/Gdt08=
 github.com/ugorji/go/codec v1.3.1 h1:waO7eEiFDwidsBN6agj1vJQ4AG7lh2yqXyOXqhgQuyY=
 github.com/ugorji/go/codec v1.3.1/go.mod h1:pRBVtBSKl77K30Bv8R2P+cLSGaTtex6fsA2Wjqmfxj4=
-github.com/wjsoj/cc-core v0.8.105 h1:9gEkT7gTi1IIkHPQIEOqqqeAtGMKbBFDeEUx5OB2lQE=
-github.com/wjsoj/cc-core v0.8.105/go.mod h1:3NDHXjTwyMd476NtFzey8P+DUG2Xoeh08rZAufyXHZA=
+github.com/wjsoj/cc-core v0.8.106 h1:IDVJQkOeTL2JU8cUz2VGmtnwU/z56++2QxCaStP4SSw=
+github.com/wjsoj/cc-core v0.8.106/go.mod h1:3NDHXjTwyMd476NtFzey8P+DUG2Xoeh08rZAufyXHZA=
 github.com/xyproto/randomstring v1.0.5 h1:YtlWPoRdgMu3NZtP45drfy1GKoojuR7hmRcnhZqKjWU=
 github.com/xyproto/randomstring v1.0.5/go.mod h1:rgmS5DeNXLivK7YprL0pY+lTuhNQW3iGxZ18UQApw/E=
 go.mongodb.org/mongo-driver/v2 v2.5.0 h1:yXUhImUjjAInNcpTcAlPHiT7bIXhshCTL3jVBkF3xaE=
