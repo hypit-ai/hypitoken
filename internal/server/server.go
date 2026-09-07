@@ -16,6 +16,7 @@ import (
 	"github.com/wjsoj/CPA-Claude/internal/config"
 	"github.com/wjsoj/cc-core/auth"
 	"github.com/wjsoj/cc-core/clienttoken"
+	"github.com/wjsoj/cc-core/codexsidecar"
 	"github.com/wjsoj/cc-core/codexws"
 	"github.com/wjsoj/cc-core/pricing"
 	"github.com/wjsoj/cc-core/ratelimit"
@@ -60,6 +61,10 @@ type Server struct {
 	// account whose request stream contains zero quota probes is
 	// trivially flagged as a third-party tool.
 	sidecar *ccsidecar.Manager
+
+	// codexSidecar emulates the auxiliary traffic a real Codex client emits.
+	// Always constructed; it is inert unless cfg.CodexSidecar.Enabled.
+	codexSidecar *codexsidecar.Manager
 
 	// saas, when non-nil, layers multi-tenant user-token resolution + balance
 	// billing on top of the legacy clienttoken.Store. nil-safe: when unset,
@@ -131,6 +136,14 @@ func New(cfg *config.Config, pool *auth.Pool, store *usage.Store, reqLog *reques
 		Enabled: true,
 		UseUTLS: cfg.UseUTLS,
 		BaseURL: cfg.AnthropicBaseURL,
+	})
+	// The Codex counterpart is a separate manager, not a mode of the Anthropic
+	// one: the two clients' auxiliary traffic has no endpoint, no body and no
+	// identity in common, and generalising over them would produce a shape
+	// belonging to neither.
+	s.codexSidecar = codexsidecar.New(codexsidecar.Config{
+		Enabled: cfg.CodexSidecar.Enabled,
+		UseUTLS: cfg.UseUTLS,
 	})
 	s.switchTracker = thinkingsig.NewSwitchTracker()
 
@@ -260,6 +273,7 @@ func (s *Server) Start() error {
 // Shutdown gracefully stops every endpoint in parallel.
 func (s *Server) Shutdown(ctx context.Context) error {
 	s.sidecar.Stop()
+	s.codexSidecar.Stop()
 	var wg sync.WaitGroup
 	errs := make([]error, len(s.endpoints))
 	for i, ep := range s.endpoints {

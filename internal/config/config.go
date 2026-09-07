@@ -110,6 +110,20 @@ type Config struct {
 	// per-deployment. See CodexWSConfig.
 	CodexWS CodexWSConfig `yaml:"codex_ws"`
 
+	// CodexSidecar controls emulation of the auxiliary traffic a real Codex
+	// client emits alongside its turns — the plugin store, MCP discovery, the
+	// model catalog, user settings, analytics and OTLP metrics.
+	//
+	// Disabled by default, and the default is the conservative side of a real
+	// trade-off rather than a placeholder. A relayed account that emits only
+	// business requests looks unlike a desktop install; an account that emits
+	// auxiliary traffic we got subtly wrong looks unlike anything at all. The
+	// emulator is built so the second failure cannot happen quietly — analytics
+	// events cannot be constructed without ids from a turn that actually
+	// occurred, and per-account attributes vary — but it is still new, so it is
+	// opt-in per deployment.
+	CodexSidecar CodexSidecarConfig `yaml:"codex_sidecar"`
+
 	// Directory for per-request JSONL logs (one file per day:
 	// requests-YYYY-MM-DD.jsonl). Empty = disabled.
 	LogDir string `yaml:"log_dir,omitempty"`
@@ -201,6 +215,12 @@ type Config struct {
 	// Shop.Enabled is false and endpoints.shop is disabled, no shop code
 	// runs and no extra listener binds.
 	Shop shop.Config `yaml:"shop"`
+}
+
+// CodexSidecarConfig gates the Codex auxiliary-traffic emulator.
+type CodexSidecarConfig struct {
+	// Enabled turns the emulator on. Off by default.
+	Enabled bool `yaml:"enabled"`
 }
 
 // CodexWSConfig configures the Codex WebSocket transport. WebSocket carries

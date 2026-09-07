@@ -182,11 +182,14 @@ func (s *Server) handleCodexResponsesWS(c *gin.Context) {
 	}
 	_ = clientConn.SetReadDeadline(time.Time{})
 
-	// The WS handshake carries no x-codex-routing-hint (that header is an
-	// HTTP-path thing — both captures agree), so the model is read here only
-	// for credential acquisition and billing. It must not inherit the "unknown"
-	// placeholder below, which exists solely so billing and log rows have
-	// something to group on.
+	// The model is read here for credential acquisition, billing, AND the
+	// handshake's x-codex-routing-hint, which is set from this same value just
+	// below so the header can never name a different model than the frame.
+	//
+	// This comment used to say the handshake carries no routing hint, "both
+	// captures agree" — the 0.153.4 captures disagree: every ordinary upgrade
+	// carries it. It must not inherit the "unknown" placeholder below, which
+	// exists solely so billing and log rows have something to group on.
 	model := codexWSExtractModel(firstFrame)
 	if model == "" {
 		model = "unknown"
@@ -245,8 +248,9 @@ func (s *Server) handleCodexResponsesWS(c *gin.Context) {
 		// value goes to mimicry.RewriteCodexClientFrame for every frame on this
 		// socket. Handing the handshake and the frames one object is what stops
 		// them disagreeing — a genuine client always has them identical, so a
-		// mismatch is a one-comparison tell. routingModel/routingTier are not
-		// passed: the WS handshake carries no routing hint (both captures agree).
+		// mismatch is a one-comparison tell. The routing hint is applied after
+		// this call rather than through UpstreamHeaderOptions.Model, so it is
+		// derived from the same firstFrame that goes upstream.
 		header := codexws.BuildUpstreamHeadersWithOptions(codexws.UpstreamHeaderOptions{
 			AccessToken: accessToken,
 			AccountID:   accountID,

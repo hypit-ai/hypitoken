@@ -450,3 +450,16 @@ backup:
     # GetObject). @/path keeps the secret out of this file.
     access_key_id: "@/etc/hypitoken/s3_key_id"
     secret_access_key: "@/etc/hypitoken/s3_secret"
+
+# Emulate the auxiliary traffic a real Codex client emits alongside its turns —
+# the plugin store, MCP discovery, the model catalog, user settings, analytics
+# and OTLP metrics. Off by default.
+#
+# The default is a real trade-off, not a placeholder. An account that emits only
+# business requests looks unlike a desktop install; an account that emits
+# auxiliary traffic we got subtly wrong looks unlike anything at all. Analytics
+# events can only be built from the ids of a turn that actually happened, and
+# per-account attributes vary, so the second failure cannot happen quietly — but
+# it is new, so enable it deliberately.
+codex_sidecar:
+  enabled: false

@@ -69,6 +69,13 @@ func (s *Server) doForwardCodexOAuth(c *gin.Context, a *auth.Auth, path string, 
 		return true, false
 	}
 
+	// First touch of this (account, client) pair fires the auxiliary traffic a
+	// real Codex client emits at startup — plugin store, MCP discovery, model
+	// catalog. Inert unless codex_sidecar.enabled, and it never blocks: unlike
+	// the Anthropic side there is no quota probe here whose result the first
+	// business request needs to wait for.
+	s.codexSidecar.Notify(a, clientToken)
+
 	snap := a.Snapshot()
 	baseURL := strings.TrimRight(s.cfg.ChatGPTBackendBaseURL, "/") + "/codex"
 	// Per-credential base URL override is allowed for vendor-relay setups.
