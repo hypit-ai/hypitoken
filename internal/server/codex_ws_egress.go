@@ -250,20 +250,36 @@ func (e *codexWSEgress) dial(
 	// bearer the bytes actually went out under.
 	poolKey := a.ID + "|" + sessionID
 
+	// The frame is the sanitized Responses body rendered in the captured
+	// top-level key order, plus `type` in front.
+	//
+	// `stream` is deliberately NOT forced here. SanitizeCodexRequestBody already
+	// sets it true unconditionally — the backend only emits completed responses
+	// over SSE, and a non-streaming caller is served by aggregating downstream,
+	// exactly as the HTTP path already does. Forcing it again through
+	// setJSONBool would be worse than redundant: that helper round-trips the
+	// body through a map, which re-sorts every top-level key and would undo the
+	// ordering NewCodexResponseCreateFrame just restored.
 	frame, err := mimicry.NewCodexResponseCreateFrame(upstreamBody)
 	if err != nil {
 		return nil, fmt.Errorf("build response.create frame: %w", err)
 	}
-	// The backend streams a turn's events over the socket regardless of what
-	// the client asked for; a non-streaming caller is served by aggregating
-	// them downstream, exactly as the HTTP path already does for a relay that
-	// ignores `stream:false`. Real frames always carry stream:true.
-	if rewritten, serr := setJSONBool(frame, "stream", true); serr == nil {
-		frame = rewritten
-	}
 	frame, err = mimicry.RewriteCodexClientFrame(frame, ident)
 	if err != nil {
 		return nil, fmt.Errorf("bind frame identity: %w", err)
+	}
+	// Ordering has to be the LAST step, not part of the build. Two stages
+	// between here and the socket round-trip the body through a Go map and so
+	// re-sort every top-level key: SanitizeCodexRequestBody upstream, and
+	// servicetier.NormalizeRequest inside the rewrite just above. Canonicalizing
+	// in the builder alone was silently undone by the second one, which shipped
+	// `type` first followed by an alphabetical run — an order no client emits.
+	if ordered, oerr := mimicry.CanonicalizeCodexFrameKeys(frame); oerr == nil {
+		frame = ordered
+	} else {
+		// A frame we cannot re-order still goes out: wrong key order is a
+		// fingerprint problem, refusing the turn is a user-visible one.
+		log.Warnf("codex ws egress: %s frame key order left uncanonical: %v", a.ID, oerr)
 	}
 
 	accessToken, _ := a.Credentials()
@@ -352,6 +368,14 @@ func (e *codexWSEgress) identity(a *auth.Auth, sessionID string) (mimicry.CodexF
 // and Sec-WebSocket-Accept in particular would be nonsense to forward.
 func handshakeResponseHeaders(resp *http.Response) http.Header {
 	out := http.Header{}
+	// The body we are about to hand back IS an SSE stream, and on this path
+	// nothing else will say so: a WebSocket 101 carries no Content-Type to copy,
+	// and the relays commit whatever headers this response has. One fork masked
+	// that because its commit helper declares SSE itself; the other copies the
+	// upstream response verbatim and would have sent an event-stream with no
+	// Content-Type at all, which many SSE clients refuse to parse.
+	out.Set("Content-Type", "text/event-stream; charset=utf-8")
+	out.Set("Cache-Control", "no-cache")
 	if resp == nil {
 		return out
 	}

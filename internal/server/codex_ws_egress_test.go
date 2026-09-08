@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -71,6 +72,16 @@ func (c *egressConn) isClosed() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.closed
+}
+
+func (c *egressConn) rawFrame(t *testing.T) []byte {
+	t.Helper()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.writes) == 0 {
+		t.Fatal("nothing was written upstream")
+	}
+	return c.writes[0]
 }
 
 func (c *egressConn) sentFrame(t *testing.T) map[string]any {
@@ -190,6 +201,43 @@ func TestCodexWSEgressSendsIdentityBoundResponseCreate(t *testing.T) {
 	// The backend streams a turn's events regardless; real frames say so.
 	if frame["stream"] != true {
 		t.Fatalf("frame stream = %v, want true", frame["stream"])
+	}
+
+	// Top-level key ORDER, not just contents. The sanitizer upstream of this
+	// round-trips the body through a map, so what arrives is alphabetical; the
+	// frame builder is the one place that can put it back into the captured
+	// order, and a helper that re-sorts (setJSONBool did) silently undoes it.
+	// json.Unmarshal into a map cannot see order, so read the raw bytes.
+	raw := conn.rawFrame(t)
+	wantOrder := []string{"type", "model", "input", "stream", "prompt_cache_key", "client_metadata"}
+	at := -1
+	for _, k := range wantOrder {
+		i := bytes.Index(raw, []byte(`"`+k+`":`))
+		if i < 0 {
+			t.Fatalf("frame is missing %q: %s", k, raw)
+		}
+		if i < at {
+			t.Fatalf("key %q is out of captured order in: %s", k, raw)
+		}
+		at = i
+	}
+	if !bytes.HasPrefix(bytes.TrimSpace(raw), []byte(`{"type":"response.create"`)) {
+		t.Fatalf("type is not the first key: %s", raw)
+	}
+
+	// request_kind must say what the frame actually is. A prewarm is a
+	// generate:false cache-priming frame that returns no output; ours generates.
+	md := map[string]any{}
+	cm, _ := frame["client_metadata"].(map[string]any)
+	tm, _ := cm["x-codex-turn-metadata"].(string)
+	if err := json.Unmarshal([]byte(tm), &md); err != nil {
+		t.Fatalf("embedded turn metadata invalid: %v", err)
+	}
+	if md["request_kind"] != "turn" {
+		t.Fatalf("request_kind = %v, want turn", md["request_kind"])
+	}
+	if md["workspace_kind"] != "projectless" {
+		t.Fatalf("workspace_kind = %v, want projectless", md["workspace_kind"])
 	}
 }
 
