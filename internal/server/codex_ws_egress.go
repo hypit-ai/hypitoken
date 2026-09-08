@@ -106,6 +106,38 @@ func newCodexWSEgress(cfg *config.Config) *codexWSEgress {
 	return e
 }
 
+// warnUnmatchedAllowlist reports allowlist entries that name no loaded
+// credential, at startup, once.
+//
+// Without this a typo and a correct config are indistinguishable from the
+// outside: the allowlist is an exact match against auth.Auth.ID, which is the
+// credential FILENAME — "codex-someone@gmail.com-pro.json", not the short label
+// an operator naturally writes. An entry that matches nothing admits nothing,
+// so every turn quietly takes the HTTP path and the canary window ends looking
+// like the WebSocket egress simply had no effect. That is the worst possible
+// failure for a measurement: it does not error, it produces a confident wrong
+// answer.
+//
+// Deliberately a warning rather than a fatal. The allowlist narrows an
+// already-optional feature, so a bad entry must not stop the proxy from
+// serving; it just has to be impossible to miss in the journal.
+func (e *codexWSEgress) warnUnmatchedAllowlist(pool *auth.Pool) {
+	if e == nil || pool == nil || len(e.cfg.AuthIDs) == 0 || !e.cfg.WSEgressEnabled() {
+		return
+	}
+	loaded := map[string]bool{}
+	for _, st := range pool.Status() {
+		loaded[st.Auth.ID] = true
+	}
+	for _, want := range e.cfg.AuthIDs {
+		if !loaded[want] {
+			log.Warnf("codex ws egress: auth_ids entry %q matches no loaded credential — "+
+				"it will admit nothing and its traffic will silently stay on HTTP. "+
+				"The id is the credential FILENAME (e.g. codex-someone@gmail.com-pro.json), not the short label.", want)
+		}
+	}
+}
+
 // Close releases every pooled socket. Called from Server.Shutdown.
 func (e *codexWSEgress) Close() {
 	if e != nil && e.pool != nil {

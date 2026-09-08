@@ -378,6 +378,14 @@ func TestCodexWSEgressEligibility(t *testing.T) {
 		t.Fatal("a credential outside the allowlist was admitted; there would be no control group")
 	}
 
+	// The allowlist matches auth.Auth.ID, which is the credential FILENAME.
+	// An operator writing the short label gets an entry that admits nothing —
+	// which reads exactly like "the WebSocket egress had no effect" — so the
+	// id must be matched exactly and the mismatch has to be announced.
+	if scoped.eligible(wsCred("cred-1@gmail.com-pro.json"), "/v1/responses", "") {
+		t.Fatal("allowlist matched on a prefix; a canary must admit exactly what was named")
+	}
+
 	// Disabled by default: a deployment that never sets the mode keeps the
 	// behaviour every release before this one had.
 	unset := config.CodexWSUpstreamConfig{}
