@@ -138,8 +138,13 @@ func (s *Server) doForwardCodexOAuth(c *gin.Context, a *auth.Auth, path string, 
 	// out, after sanitization — so the header can never name a different model
 	// than the body does.
 	routingModel, routingTier := mimicry.CodexModelAndTier(upstreamBody)
+	// Hoisted because the WebSocket egress below needs the SAME value: it is
+	// both the pool key and the frame identity's session id, so a conversation
+	// keeps one upstream session — and therefore one prompt-cache namespace —
+	// whichever transport ends up carrying a given turn.
+	upstreamSessionID := s.codexUpstreamSessionID(a, clientToken, slotID, body)
 	mimicry.ApplyCodexHeadersWithSession(upReq, mimicry.DefaultCodexProfile(), accessToken, accountID,
-		isCompactPath, routingModel, routingTier, s.codexUpstreamSessionID(a, clientToken, slotID, body))
+		isCompactPath, routingModel, routingTier, upstreamSessionID)
 
 	// Shared pooled transport (per proxyURL). Reusing HTTP/2 connections is
 	// critical here: chatgpt.com's CF edge rate-limits new TCP/TLS connections
@@ -163,7 +168,40 @@ func (s *Server) doForwardCodexOAuth(c *gin.Context, a *auth.Auth, path string, 
 	// credential that actually served the turn or it says nothing about that
 	// credential's egress.
 	dispatchAt := time.Now()
-	resp, err := client.Do(upReq)
+
+	// WebSocket egress, when configured. The turn comes back dressed as an
+	// *http.Response whose body is the upstream frames rendered as SSE, so
+	// everything below this point — status handling, the streaming relays, the
+	// non-streaming aggregator, billing, logging — is transport-agnostic.
+	//
+	// A failure here has not written a byte downstream, so falling back to the
+	// HTTP request already prepared above costs the caller latency and nothing
+	// else. dispatchAt is re-anchored so the time-to-first-byte we record
+	// belongs to the transport that actually served the turn rather than
+	// including a failed WebSocket dial.
+	var resp *http.Response
+	upstreamTransport := "http"
+	if s.codexWSEgress.eligible(a, path, snap.BaseURL) {
+		turn, werr := s.codexWSEgress.dial(ctx, a, upstreamBody, upstreamSessionID, routingModel, routingTier)
+		switch {
+		case werr == nil:
+			resp = turn.resp
+			upstreamTransport = "ws"
+		case !s.cfg.CodexWS.Upstream.HTTPFallbackAllowed():
+			// Diagnostic mode: surface the transport fault instead of masking
+			// it behind a fallback that would make it invisible. Still a
+			// credential-level rollback rather than a client-visible error —
+			// another credential may well dial fine.
+			log.Warnf("codex ws egress: %s dial failed and fallback is disabled: %v", a.ID, werr)
+			return true, false
+		default:
+			s.codexWSEgress.noteFailure(a.ID, werr)
+			dispatchAt = time.Now()
+		}
+	}
+	if resp == nil {
+		resp, err = client.Do(upReq)
+	}
 	if err != nil {
 		if isClientDisconnect(ctx, err) {
 			a.MarkClientCancel(err.Error())
@@ -360,8 +398,8 @@ func (s *Server) doForwardCodexOAuth(c *gin.Context, a *auth.Auth, path string, 
 				// removing them, so a window where the model is at capacity
 				// everywhere still routes instead of reporting an empty pool.
 				a.MarkModelShed(model, time.Now())
-				log.Warnf("codex oauth: %s shed the request before any output (attempt %d, %s): %s — retrying on another credential",
-					a.ID, attempts, time.Since(start).Round(time.Millisecond), res.shed)
+				log.Warnf("codex oauth: %s shed the request before any output over %s (attempt %d, %s): %s — retrying on another credential",
+					a.ID, upstreamTransport, attempts, time.Since(start).Round(time.Millisecond), res.shed)
 				// Record the shed as a credential-attempt row. It is withheld
 				// from the client by design, and until now it was withheld from
 				// the archive too: 3315 of these in one 16-hour production
@@ -420,7 +458,11 @@ func (s *Server) doForwardCodexOAuth(c *gin.Context, a *auth.Auth, path string, 
 				log.Infof("codex oauth: client canceled mid-stream via %s", a.ID)
 			} else {
 				streamErr = "stream truncated before terminal event"
-				log.Warnf("codex oauth: SSE stream ended before terminal event (truncated upstream) via %s: %v", a.ID, rerr)
+				// The transport is named because it is the number this whole
+				// egress change is judged on: a WebSocket carries protocol-level
+				// ping/pong across the silences that truncate an idle HTTP
+				// stream, so if it is working, this line stops saying "ws".
+				log.Warnf("codex oauth: %s stream ended before terminal event (truncated upstream) via %s: %v", upstreamTransport, a.ID, rerr)
 			}
 		}
 	default:

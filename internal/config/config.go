@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/wjsoj/CPA-Claude/internal/saas"
 	"github.com/wjsoj/CPA-Claude/internal/shop"
@@ -244,6 +245,135 @@ type CodexWSConfig struct {
 
 	// ReadLimitBytes caps a single inbound WS message. 0 => 16 MiB.
 	ReadLimitBytes int64 `yaml:"read_limit_bytes,omitempty"`
+
+	// Upstream configures the EGRESS transport for ordinary HTTP requests —
+	// independent of Enabled above, which is about the WS ingress route.
+	Upstream CodexWSUpstreamConfig `yaml:"upstream,omitempty"`
+}
+
+// CodexWSUpstreamConfig selects and tunes the WebSocket egress path: forwarding
+// an HTTP-ingress Codex request over an upstream WebSocket instead of the
+// legacy HTTP POST /codex/responses.
+//
+// The two directions are deliberately separate settings. CodexWSConfig.Enabled
+// opens a WS route for clients that already speak the protocol; this block
+// changes what we do upstream for the HTTP clients that are the overwhelming
+// majority of the traffic. Turning one on has never implied the other.
+type CodexWSUpstreamConfig struct {
+	// Mode is one of:
+	//
+	//	"sse"  — always use the HTTP POST path. The default, and the behaviour
+	//	         every release before this one had.
+	//	"auto" — try the WebSocket first and fall back to HTTP within the same
+	//	         attempt when it fails before any byte reaches the client. A
+	//	         failure is invisible to the caller, costing only latency.
+	//	"ws"   — try the WebSocket and do NOT fall back. Diagnostic only: it
+	//	         makes a transport fault visible instead of masking it.
+	//
+	// Anything unrecognised is treated as "sse", so a typo degrades to the
+	// proven path rather than to an unintended one.
+	Mode string `yaml:"mode,omitempty"`
+
+	// PoolIdleSeconds closes a pooled upstream socket left unused this long.
+	// 0 => 300 (5 min). Reuse is the whole point of the pool: a socket dialed
+	// per request would cost one TLS handshake per turn against an edge that
+	// rate-limits new connections, which is strictly worse than the pooled h2
+	// transport the HTTP path already uses.
+	PoolIdleSeconds int `yaml:"pool_idle_seconds,omitempty"`
+
+	// PoolMaxAgeSeconds retires a socket this long after it was dialed.
+	// 0 => 3300 (55 min), just inside where the backend retires its own.
+	PoolMaxAgeSeconds int `yaml:"pool_max_age_seconds,omitempty"`
+
+	// PoolMaxEntries caps pooled sockets across all accounts. 0 => 512.
+	// Reaching the cap serves the turn on an unpooled socket rather than
+	// failing it.
+	PoolMaxEntries int `yaml:"pool_max_entries,omitempty"`
+
+	// ReadTimeoutSeconds bounds the wait for each upstream frame. 0 => 180.
+	//
+	// This is not a turn budget. The backend parks a queued turn and heartbeats
+	// with `keepalive` frames roughly every 30s, so a short value here cuts off
+	// turns that were only waiting for capacity — exactly the turns the
+	// WebSocket transport exists to hold on to.
+	ReadTimeoutSeconds int `yaml:"read_timeout_seconds,omitempty"`
+
+	// FallbackCooldownSeconds is how long one conversation stays pinned to the
+	// HTTP path after its WebSocket attempt failed. 0 => 600 (10 min).
+	//
+	// Without a cooldown a backend that refuses WebSockets for an account makes
+	// every one of its requests pay a failed dial before falling back. With it,
+	// the first failure pays and the rest go straight to HTTP.
+	FallbackCooldownSeconds int `yaml:"fallback_cooldown_seconds,omitempty"`
+}
+
+// Codex WebSocket egress modes.
+const (
+	CodexWSUpstreamSSE  = "sse"
+	CodexWSUpstreamAuto = "auto"
+	CodexWSUpstreamWS   = "ws"
+)
+
+// Normalize fills the zero values and forces an unrecognised mode to "sse".
+//
+// Defaulting an unknown mode to the proven path rather than rejecting the
+// config is deliberate: a typo in this block must not take a deployment down,
+// and must not silently opt it into the new transport either.
+func (u *CodexWSUpstreamConfig) Normalize() {
+	switch strings.ToLower(strings.TrimSpace(u.Mode)) {
+	case CodexWSUpstreamAuto:
+		u.Mode = CodexWSUpstreamAuto
+	case CodexWSUpstreamWS:
+		u.Mode = CodexWSUpstreamWS
+	default:
+		u.Mode = CodexWSUpstreamSSE
+	}
+	if u.PoolIdleSeconds <= 0 {
+		u.PoolIdleSeconds = 300
+	}
+	if u.PoolMaxAgeSeconds <= 0 {
+		u.PoolMaxAgeSeconds = 3300
+	}
+	if u.PoolMaxEntries <= 0 {
+		u.PoolMaxEntries = 512
+	}
+	if u.ReadTimeoutSeconds <= 0 {
+		u.ReadTimeoutSeconds = 180
+	}
+	if u.FallbackCooldownSeconds <= 0 {
+		u.FallbackCooldownSeconds = 600
+	}
+}
+
+// WSEgressEnabled reports whether an HTTP-ingress Codex request may be
+// forwarded over a WebSocket.
+func (u CodexWSUpstreamConfig) WSEgressEnabled() bool {
+	return u.Mode == CodexWSUpstreamAuto || u.Mode == CodexWSUpstreamWS
+}
+
+// HTTPFallbackAllowed reports whether a failed WebSocket attempt may retry the
+// same turn over HTTP. False only in the diagnostic "ws" mode.
+func (u CodexWSUpstreamConfig) HTTPFallbackAllowed() bool {
+	return u.Mode != CodexWSUpstreamWS
+}
+
+// PoolIdle / PoolMaxAge / ReadTimeout / FallbackCooldown are the normalized
+// durations. Callers should use these rather than the raw second counts, which
+// are zero until Load has normalized them.
+func (u CodexWSUpstreamConfig) PoolIdle() time.Duration {
+	return time.Duration(u.PoolIdleSeconds) * time.Second
+}
+
+func (u CodexWSUpstreamConfig) PoolMaxAge() time.Duration {
+	return time.Duration(u.PoolMaxAgeSeconds) * time.Second
+}
+
+func (u CodexWSUpstreamConfig) ReadTimeout() time.Duration {
+	return time.Duration(u.ReadTimeoutSeconds) * time.Second
+}
+
+func (u CodexWSUpstreamConfig) FallbackCooldown() time.Duration {
+	return time.Duration(u.FallbackCooldownSeconds) * time.Second
 }
 
 // TokenGroup defines one named credential group + its upstream channel +
@@ -370,6 +500,7 @@ func applyDefaults(c *Config, path string) {
 	if c.CodexWS.ReadLimitBytes == 0 {
 		c.CodexWS.ReadLimitBytes = 16 << 20
 	}
+	c.CodexWS.Upstream.Normalize()
 	dir := filepath.Dir(path)
 	if c.AuthDir == "" {
 		c.AuthDir = filepath.Join(dir, "auths")

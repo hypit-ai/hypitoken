@@ -26,3 +26,8 @@
 .claude/
 backups/
 /secrets/
+
+# Local-only Go workspace, used to iterate on the sibling cc-core checkout.
+# A `replace` in go.mod would do the same thing and has broken CI here before.
+go.work
+go.work.sum
