@@ -17,6 +17,11 @@ interface Slot {
   // turns have to be retried", which is what a user actually felt.
   reqs?: number;
   shed?: number;
+  // Withheld pre-output sheds: upstream attempts refused and silently re-run on
+  // another credential. Counts attempts, so it can exceed reqs. This is the
+  // common kind — `shed` only sees the ones that arrived after output had
+  // started — and without it the overlay stayed green through bad windows.
+  shed_attempts?: number;
 }
 interface DayStat {
   date: number; // unix seconds (midnight)
@@ -178,6 +183,7 @@ function ProviderCard({ p }: { p: ProviderMon }) {
               kind: "slot" as const,
               reqs: s.reqs,
               shed: s.shed,
+              shedAttempts: s.shed_attempts,
             }))}
             slotCount={144}
           />
@@ -235,10 +241,19 @@ interface StripSlot {
   kind: "slot" | "day";
   reqs?: number;
   shed?: number;
+  shedAttempts?: number;
 }
 
-// shedUnstable is the share of real requests upstream shed before a slot is
-// drawn amber rather than green.
+// shedSeverity is shed activity per request in a slot, counting the retries the
+// failover hides. An attempt count, not a probability: a slot that retried every
+// request twice reads as 2.
+function shedSeverity(s: StripSlot): number {
+  if (!s.reqs) return 0;
+  return ((s.shed ?? 0) + (s.shedAttempts ?? 0)) / s.reqs;
+}
+
+// shedUnstable is the shed severity at which a slot is drawn amber rather than
+// green.
 //
 // 15% because the ordinary background is a few percent and a bad window runs
 // 25-30%: low enough to catch a genuinely rough period, high enough that the
@@ -252,9 +267,9 @@ const minShedSample = 8;
 // and succeeds, so it never shows up as an outage — the user just waited
 // longer. Amber is the honest colour for that: not down, not fine.
 function slotUnstable(s: StripSlot): boolean {
-  if (s.reqs === undefined || s.shed === undefined) return false;
+  if (s.reqs === undefined) return false;
   if (s.reqs < minShedSample) return false;
-  return s.shed / s.reqs >= shedUnstable;
+  return shedSeverity(s) >= shedUnstable;
 }
 
 function slotFill(s: StripSlot): string {
@@ -339,8 +354,11 @@ function UptimeStrip({
             // percentage above reads fine, and the reason it is not green is
             // that real turns were being retried.
             if (slotUnstable(s)) {
+              // Clamped for display: severity counts attempts and can exceed
+              // 1, and "180% of requests" reads as a bug rather than as a very
+              // bad ten minutes.
               title += ` · ${t("status.unstable", {
-                pct: Math.round(((s.shed ?? 0) / (s.reqs ?? 1)) * 100),
+                pct: Math.round(Math.min(1, shedSeverity(s)) * 100),
               })}`;
             }
           }

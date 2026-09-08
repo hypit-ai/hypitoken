@@ -157,6 +157,12 @@ func (s *Server) doForwardCodexOAuth(c *gin.Context, a *auth.Auth, path string, 
 	// is already exhausted, so a transient error surviving to here means the
 	// flap is persistent; we defer to the outer loop (another credential)
 	// without MarkFailure rather than burning this one.
+	// dispatchAt anchors this ATTEMPT's upstream clock. `start` is the whole
+	// request's, so on a third attempt it already carries two credentials'
+	// worth of failover; time-to-first-byte has to be measured against the
+	// credential that actually served the turn or it says nothing about that
+	// credential's egress.
+	dispatchAt := time.Now()
 	resp, err := client.Do(upReq)
 	if err != nil {
 		if isClientDisconnect(ctx, err) {
@@ -256,6 +262,11 @@ func (s *Server) doForwardCodexOAuth(c *gin.Context, a *auth.Auth, path string, 
 	var priced pricing.CostResult
 	var counts usage.Counts
 	var streamErr string
+	// firstOutputAt is when this credential's upstream started producing, set
+	// by whichever relay served the turn. Zero on the paths that assemble a
+	// whole body before answering, where there is no meaningful first byte to
+	// separate out.
+	var firstOutputAt time.Time
 	// Status recorded in the request log. Defaults to the upstream's, but a
 	// mid-stream client hang-up overrides it to 499 — the response was 200 on
 	// the wire, yet logging it as a success with an error attached hides it
@@ -315,6 +326,7 @@ func (s *Server) doForwardCodexOAuth(c *gin.Context, a *auth.Auth, path string, 
 			res = streamSSECodexBackend(c, resp, &counts, func() { writeSSEResponseHeaders(c, resp) })
 		}
 		sawTerminal, wroteAny, rerr = res.sawTerminal, res.wroteAny, res.err
+		firstOutputAt = res.firstOutputAt
 		// A shed that landed after output started could not be withheld. Say so
 		// either way: on the native route the CLI quietly retries, on the chat
 		// route the frame is dropped in translation, and in both cases nothing
@@ -350,6 +362,22 @@ func (s *Server) doForwardCodexOAuth(c *gin.Context, a *auth.Auth, path string, 
 				a.MarkModelShed(model, time.Now())
 				log.Warnf("codex oauth: %s shed the request before any output (attempt %d, %s): %s — retrying on another credential",
 					a.ID, attempts, time.Since(start).Round(time.Millisecond), res.shed)
+				// Record the shed as a credential-attempt row. It is withheld
+				// from the client by design, and until now it was withheld from
+				// the archive too: 3315 of these in one 16-hour production
+				// window left not a single row behind, so the only evidence
+				// that a quarter of all turns were paying a ~21s upstream
+				// stall was the journal. AttemptOnly keeps it out of every
+				// user-visible aggregate — this is telemetry, not a request the
+				// customer made or owes anything for.
+				s.emitLog(requestlog.Record{
+					Client: clientName, ClientToken: maskClientToken(clientToken), Provider: auth.ProviderOpenAI,
+					AuthID: a.ID, AuthLabel: a.Label, AuthKind: "oauth", Model: model,
+					Stream: stream, Path: path, Status: resp.StatusCode, Attempts: attempts,
+					DurationMs:  time.Since(dispatchAt).Milliseconds(),
+					AttemptOnly: true,
+					Error:       shedPreOutputLabel,
+				})
 				return true, false
 			}
 			if isClientDisconnect(ctx, rerr) {
@@ -522,6 +550,7 @@ func (s *Server) doForwardCodexOAuth(c *gin.Context, a *auth.Auth, path string, 
 		Multiplier:           multiplier,
 		Status:               logStatus,
 		DurationMs:           time.Since(start).Milliseconds(),
+		TTFBMs:               upstreamTTFBMillis(dispatchAt, firstOutputAt),
 		Stream:               stream,
 		Path:                 path,
 		Attempts:             attempts,
@@ -754,6 +783,12 @@ type codexStreamResult struct {
 	// demoted: a shed that arrived after output had started, so it could only
 	// be demoted on the way out rather than withheld.
 	demoted shedSignal
+	// firstOutputAt is when upstream produced its first content-bearing event —
+	// not the response headers, and not the response.created/in_progress
+	// preamble it opens with, which arrive immediately and say nothing about
+	// when the model started working. Zero when the turn produced no output at
+	// all (a withheld shed, a broken stream).
+	firstOutputAt time.Time
 }
 
 // streamSSECodexBackend is the Codex backend SSE passthrough. The format
@@ -953,6 +988,9 @@ func streamSSECodexBackend(c *gin.Context, resp *http.Response, counts *usage.Co
 			}
 
 			if len(emit) > 0 {
+				if !sentAny {
+					out.firstOutputAt = time.Now()
+				}
 				sentAny = true
 			}
 			if len(emit) > 0 || rerr != nil {

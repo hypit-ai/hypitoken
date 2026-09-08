@@ -69,6 +69,9 @@ func streamCodexAsChatCompletions(c *gin.Context, upstream io.Reader, counts *us
 		for {
 			if len(pending) > 0 {
 				frame, pending = pending[0], pending[1:]
+				if !sentAny {
+					out.firstOutputAt = time.Now()
+				}
 				sentAny = true
 				return frame, apicompat.IsDoneFrame(frame), nil
 			}

@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -391,5 +392,77 @@ func TestAggregateCodexResponseStreamStillAggregates(t *testing.T) {
 	}
 	if counts.InputTokens != 7 || counts.OutputTokens != 3 {
 		t.Errorf("usage must be collected: in=%d out=%d", counts.InputTokens, counts.OutputTokens)
+	}
+}
+
+// TestStreamSSECodexBackendTimesFirstOutput pins what firstOutputAt is measuring.
+//
+// The obvious reading — "when the response arrived" — is wrong on this backend
+// and would report a number that is always near zero: upstream opens every turn
+// with response.created immediately and only then goes away to think, which is
+// exactly the interval worth measuring. The stamp has to land on the first
+// CONTENT-bearing event, after the preamble.
+func TestStreamSSECodexBackendTimesFirstOutput(t *testing.T) {
+	c, _ := newCodexStreamCtx()
+	body := "event: response.created\n" +
+		`data: {"type":"response.created","response":{"id":"resp_1"}}` + "\n\n" +
+		"event: response.output_text.delta\n" +
+		`data: {"type":"response.output_text.delta","delta":"hi"}` + "\n\n" +
+		"event: response.completed\n" +
+		`data: {"type":"response.completed","response":{"usage":{"input_tokens":1,"output_tokens":1}}}` + "\n\n"
+	resp := &http.Response{Body: io.NopCloser(strings.NewReader(body))}
+
+	before := time.Now()
+	var counts usage.Counts
+	res := streamSSECodexBackend(c, resp, &counts, func() {})
+	after := time.Now()
+
+	if res.firstOutputAt.IsZero() {
+		t.Fatal("firstOutputAt must be stamped once real output is relayed")
+	}
+	if res.firstOutputAt.Before(before) || res.firstOutputAt.After(after) {
+		t.Errorf("firstOutputAt = %v, outside the relay window [%v, %v]", res.firstOutputAt, before, after)
+	}
+}
+
+// A withheld shed produced no output at all, so there is no first byte to
+// report. Stamping one anyway would put the shed's own latency into the TTFB
+// average of the turns that succeeded.
+func TestStreamSSECodexBackendLeavesFirstOutputUnsetOnShed(t *testing.T) {
+	c, _ := newCodexStreamCtx()
+	body := "event: response.created\n" +
+		`data: {"type":"response.created","response":{"id":"resp_1"}}` + "\n\n" +
+		"event: error\n" +
+		`data: {"type":"error","error":{"code":"server_is_overloaded","message":"nope"}}` + "\n\n"
+	resp := &http.Response{Body: io.NopCloser(strings.NewReader(body))}
+
+	var counts usage.Counts
+	res := streamSSECodexBackend(c, resp, &counts, func() {})
+	if res.shed == "" {
+		t.Fatal("precondition: the frame should have been withheld as a shed")
+	}
+	if !res.firstOutputAt.IsZero() {
+		t.Errorf("firstOutputAt = %v on a turn that produced nothing; want zero", res.firstOutputAt)
+	}
+}
+
+func TestUpstreamTTFBMillis(t *testing.T) {
+	base := time.Date(2026, 9, 8, 3, 0, 0, 0, time.UTC)
+	if got := upstreamTTFBMillis(base, base.Add(10500*time.Millisecond)); got != 10500 {
+		t.Errorf("TTFB = %d, want 10500", got)
+	}
+	// An unmeasured turn must report "unknown", not "instant": rounding it to
+	// zero would make every shed and every broken stream look like the fastest
+	// requests in the archive.
+	if got := upstreamTTFBMillis(base, time.Time{}); got != 0 {
+		t.Errorf("unset firstOutputAt = %d, want 0", got)
+	}
+	if got := upstreamTTFBMillis(time.Time{}, base); got != 0 {
+		t.Errorf("unset dispatchAt = %d, want 0", got)
+	}
+	// Timestamps from two different attempts would produce a negative gap;
+	// clamp rather than write a nonsense duration into the archive.
+	if got := upstreamTTFBMillis(base, base.Add(-time.Second)); got != 0 {
+		t.Errorf("negative gap = %d, want 0", got)
 	}
 }

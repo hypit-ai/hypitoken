@@ -408,6 +408,8 @@ func (s *Server) doForwardCodex(c *gin.Context, a *auth.Auth, path string, body 
 	upReq.Header.Set("Authorization", "Bearer "+accessToken)
 
 	client := auth.ClientFor(snap.ProxyURL, false)
+	// Per-attempt upstream clock; see the same anchor in doForwardCodexOAuth.
+	dispatchAt := time.Now()
 	resp, err := client.Do(upReq)
 	if err != nil {
 		if isClientDisconnect(ctx, err) {
@@ -468,6 +470,9 @@ func (s *Server) doForwardCodex(c *gin.Context, a *auth.Auth, path string, body 
 	var priced pricing.CostResult
 	var counts usage.Counts
 	var errSnippet string
+	// firstOutputAt is when this credential's upstream produced its first
+	// frame, set by whichever relay served the turn.
+	var firstOutputAt time.Time
 	// streamTruncated records an upstream that stopped without a terminal
 	// event, so the request log names it instead of showing a clean 200 for a
 	// stream the client saw break.
@@ -510,6 +515,7 @@ func (s *Server) doForwardCodex(c *gin.Context, a *auth.Auth, path string, body 
 				// Commits lazily, so a shed arriving before any output leaves
 				// the response uncommitted and can be retried elsewhere.
 				res := streamCodexAsChatCompletions(c, br, &counts, model, chatStreamWantsUsage(body), func() { writeSSEResponseHeaders(c, resp) })
+				firstOutputAt = res.firstOutputAt
 				if res.shed != "" {
 					// Not a byte has reached the client, so this turn is still
 					// fully recoverable on another credential. Without this the
@@ -533,6 +539,7 @@ func (s *Server) doForwardCodex(c *gin.Context, a *auth.Auth, path string, body 
 			} else {
 				writeSSEResponseHeaders(c, resp)
 				sse := streamSSEOpenAI(c, br, &counts, rewriteClientModel)
+				firstOutputAt = sse.firstOutputAt
 				clientGone = sse.clientGone
 				// An in-band capacity/quota frame is why a turn can end with
 				// output but no usage. Naming it separates "the relay shed this
@@ -770,6 +777,7 @@ func (s *Server) doForwardCodex(c *gin.Context, a *auth.Auth, path string, body 
 		BilledUSD:            billedUSD,
 		Status:               logStatus,
 		DurationMs:           time.Since(start).Milliseconds(),
+		TTFBMs:               upstreamTTFBMillis(dispatchAt, firstOutputAt),
 		Stream:               stream,
 		Path:                 path,
 		Attempts:             attempts,
@@ -823,6 +831,16 @@ func shedTurnLabel(capacity bool) string {
 	}
 	return "upstream shed the turn (quota/rate)"
 }
+
+// shedPreOutputLabel tags the attempt row for a shed that arrived before any
+// output and was therefore withheld from the client entirely.
+//
+// It is deliberately distinct from shedTurnLabel's two values: those name a
+// turn the caller SAW go wrong, this one names a turn that was rescued on
+// another credential and cost the user only latency. Sharing a label would
+// make the two indistinguishable in the archive, and they answer different
+// questions — one is a failure rate, the other is a retry tax.
+const shedPreOutputLabel = "upstream shed the turn before any output"
 
 // setJSONBool sets a top-level boolean field on a JSON object body, preserving
 // every other field's raw bytes. Used to stamp the client's `stream` intent
@@ -922,6 +940,11 @@ type sseRelayOutcome struct {
 	// upstream fault and must be visible in the log rather than passed off as a
 	// clean end-of-stream.
 	sawTerminal bool
+	// firstOutputAt is when the relay produced its first frame. The API-key path
+	// is the only unproxied Codex egress in the fleet, which makes it the
+	// control the OAuth path's time-to-first-byte is read against; measuring
+	// one and not the other leaves the comparison stuck in ad-hoc analysis.
+	firstOutputAt time.Time
 }
 
 // streamSSEOpenAI is the OpenAI SSE passthrough. The wire format is `data:
@@ -1015,6 +1038,9 @@ func streamSSEOpenAI(c *gin.Context, reader *bufio.Reader, counts *usage.Counts,
 					outLine = rebuilt
 				}
 			}
+		}
+		if len(outLine) > 0 && out.firstOutputAt.IsZero() {
+			out.firstOutputAt = time.Now()
 		}
 		return outLine, terminal, rerr
 	}
@@ -1212,4 +1238,23 @@ func isClientDisconnect(ctx context.Context, err error) bool {
 // credential without MarkFailure" decision stay in lockstep.
 func isTransientNetErr(err error) bool {
 	return auth.IsTransientNetErr(err)
+}
+
+// upstreamTTFBMillis renders the gap between handing a request to the transport
+// and the upstream's first content-bearing event, for requestlog.Record.TTFBMs.
+//
+// Zero means "not measured" rather than "instant", so a relay that never
+// reported a first output must not be rounded down into looking like the
+// fastest turn in the archive: an unset firstOutputAt returns 0, and so does a
+// negative gap, which can only come from a caller pairing timestamps from two
+// different attempts.
+func upstreamTTFBMillis(dispatchAt, firstOutputAt time.Time) int64 {
+	if dispatchAt.IsZero() || firstOutputAt.IsZero() {
+		return 0
+	}
+	ms := firstOutputAt.Sub(dispatchAt).Milliseconds()
+	if ms < 0 {
+		return 0
+	}
+	return ms
 }

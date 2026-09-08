@@ -753,8 +753,15 @@ func Mount(engine *gin.Engine, store *db.DB, authH *saasauth.Handler, tokensH *t
 					// Counts, not a rate: the threshold for "unstable" is a
 					// presentation decision and belongs with the thing that
 					// draws the strip, not with the thing that measures it.
+					//
+					// shed_attempts is the retry the customer never saw. It is
+					// what makes the overlay work at all: `shed` can only count
+					// sheds that arrived after output started, which are the
+					// rare kind, so a window where a quarter of turns were being
+					// re-run drew entirely green.
 					slot["reqs"] = b.Requests
 					slot["shed"] = b.Shed
+					slot["shed_attempts"] = b.ShedAttempts
 				}
 				recent[i] = slot
 			}
