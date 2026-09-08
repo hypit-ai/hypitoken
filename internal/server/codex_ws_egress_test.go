@@ -361,6 +361,23 @@ func TestCodexWSEgressEligibility(t *testing.T) {
 		t.Fatal("nil credential must not be eligible")
 	}
 
+	// The canary allowlist is what gives the rollout a concurrent control
+	// group: listed credentials go over the WebSocket while the rest keep
+	// carrying turns over HTTP through the same minutes.
+	only := config.CodexWSUpstreamConfig{Mode: config.CodexWSUpstreamAuto, AuthIDs: []string{"cred-1"}}
+	only.Normalize()
+	scoped := newCodexWSEgress(&config.Config{
+		ChatGPTBackendBaseURL: "https://chatgpt.com/backend-api",
+		CodexWS:               config.CodexWSConfig{Upstream: only},
+	})
+	defer scoped.Close()
+	if !scoped.eligible(oauth, "/v1/responses", "") {
+		t.Fatal("the allowlisted credential was excluded")
+	}
+	if scoped.eligible(wsCred("cred-9"), "/v1/responses", "") {
+		t.Fatal("a credential outside the allowlist was admitted; there would be no control group")
+	}
+
 	// Disabled by default: a deployment that never sets the mode keeps the
 	// behaviour every release before this one had.
 	unset := config.CodexWSUpstreamConfig{}

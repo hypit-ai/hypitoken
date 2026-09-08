@@ -298,6 +298,22 @@ type CodexWSUpstreamConfig struct {
 	// WebSocket transport exists to hold on to.
 	ReadTimeoutSeconds int `yaml:"read_timeout_seconds,omitempty"`
 
+	// AuthIDs restricts the WebSocket egress to these credential ids. Empty
+	// (the default) means every eligible credential.
+	//
+	// This is what makes a rollout measurable. Codex shed rate tracks time of
+	// day and not our load — one production window had 747 requests shed 5% at
+	// 21:00 and 27 requests shed 78% at 05:30 — so a canary judged against a
+	// baseline from a different hour reports whatever the hour was doing. With
+	// an allowlist the comparison is concurrent instead: the listed credentials
+	// carry turns over the WebSocket while the rest carry them over HTTP,
+	// through the same minutes, the same models and the same demand.
+	//
+	// Pick the canary from a credential on a fast egress. Time-to-first-token
+	// varies 4.2s-16.2s BY CREDENTIAL, tracking its socks5 throughput, so a slow
+	// one buries the transport's effect under its proxy's.
+	AuthIDs []string `yaml:"auth_ids,omitempty"`
+
 	// FallbackCooldownSeconds is how long one conversation stays pinned to the
 	// HTTP path after its WebSocket attempt failed. 0 => 600 (10 min).
 	//
@@ -349,6 +365,20 @@ func (u *CodexWSUpstreamConfig) Normalize() {
 // forwarded over a WebSocket.
 func (u CodexWSUpstreamConfig) WSEgressEnabled() bool {
 	return u.Mode == CodexWSUpstreamAuto || u.Mode == CodexWSUpstreamWS
+}
+
+// AllowsAuth reports whether this credential is in the canary allowlist. An
+// empty allowlist admits every credential.
+func (u CodexWSUpstreamConfig) AllowsAuth(authID string) bool {
+	if len(u.AuthIDs) == 0 {
+		return true
+	}
+	for _, id := range u.AuthIDs {
+		if id == authID {
+			return true
+		}
+	}
+	return false
 }
 
 // HTTPFallbackAllowed reports whether a failed WebSocket attempt may retry the

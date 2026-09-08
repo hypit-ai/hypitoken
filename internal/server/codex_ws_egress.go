@@ -139,6 +139,13 @@ func (e *codexWSEgress) eligible(a *auth.Auth, path string, snapBaseURL string) 
 		// how a working credential turns into a broken one.
 		return false
 	}
+	if !e.cfg.AllowsAuth(a.ID) {
+		// Outside the canary allowlist. Everything not listed keeps carrying
+		// turns over HTTP through the same minutes, which is the control group
+		// the comparison needs — Codex shed rate tracks the hour, not our load,
+		// so a before-and-after reading reports the hour rather than the change.
+		return false
+	}
 	return !e.inCooldown(a.ID)
 }
 
