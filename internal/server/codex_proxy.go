@@ -1164,6 +1164,9 @@ func mergeCodexUsage(dst *usage.Counts, u usage.Counts) {
 	if u.CacheCreate1hTokens > 0 {
 		dst.CacheCreate1hTokens = u.CacheCreate1hTokens
 	}
+	if u.ReasoningTokens > 0 {
+		dst.ReasoningTokens = u.ReasoningTokens
+	}
 	if u.Requests > 0 && dst.Requests == 0 {
 		dst.Requests = 1
 	}
@@ -1194,12 +1197,47 @@ func (u openaiUsage) toCounts() usage.Counts {
 	if input == 0 && output == 0 && cached == 0 {
 		return usage.Counts{}
 	}
+	reasoning := u.CompletionTokensDetails.ReasoningTokens
+	if reasoning == 0 {
+		reasoning = u.OutputTokensDetails.ReasoningTokens
+	}
 	return usage.Counts{
-		InputTokens:     nonCached,
-		OutputTokens:    output,
+		InputTokens:  nonCached,
+		OutputTokens: output,
+		// A subset of OutputTokens, not an addition to it — both spellings of
+		// the details block were already parsed and then dropped on the floor.
+		// It is the only field that separates a turn the provider downgraded
+		// from one it merely served slowly.
+		ReasoningTokens: reasoning,
 		CacheReadTokens: cached,
 		Requests:        1,
 	}
+}
+
+// extractCodexUpstreamModel reads the model the upstream says it served off a
+// terminal event. It is deliberately separate from the usage extractor rather
+// than folded into it: usage is merged from every frame that carries any,
+// while this answers a different question — whether the provider ran what was
+// asked for — and only the terminal event is authoritative about that.
+//
+// Empty when the payload names no model, which is every non-terminal frame.
+func extractCodexUpstreamModel(payload []byte) string {
+	if len(payload) == 0 {
+		return ""
+	}
+	var wrap struct {
+		Response struct {
+			Model string `json:"model"`
+		} `json:"response"`
+		Model string `json:"model"`
+	}
+	if json.Unmarshal(payload, &wrap) != nil {
+		return ""
+	}
+	if m := strings.TrimSpace(wrap.Response.Model); m != "" {
+		return m
+	}
+	return strings.TrimSpace(wrap.Model)
 }
 
 // small helper duplicating what proxy.go expresses inline — kept separate

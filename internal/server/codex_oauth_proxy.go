@@ -306,6 +306,11 @@ func (s *Server) doForwardCodexOAuth(c *gin.Context, a *auth.Auth, path string, 
 	// whole body before answering, where there is no meaningful first byte to
 	// separate out.
 	var firstOutputAt time.Time
+	// upstreamModel is reported by the streaming relay only. The aggregating
+	// and compact paths assemble a whole body and never classify frames, so
+	// they have no terminal event to read it off; an empty value there means
+	// "not observed", not "matched".
+	var upstreamModel string
 	// Status recorded in the request log. Defaults to the upstream's, but a
 	// mid-stream client hang-up overrides it to 499 — the response was 200 on
 	// the wire, yet logging it as a success with an error attached hides it
@@ -379,6 +384,7 @@ func (s *Server) doForwardCodexOAuth(c *gin.Context, a *auth.Auth, path string, 
 			res.shed = codexStalledShedLabel
 		}
 		sawTerminal, wroteAny, rerr = res.sawTerminal, res.wroteAny, res.err
+		upstreamModel = res.upstreamModel
 		firstOutputAt = res.firstOutputAt
 		// A shed that landed after output started could not be withheld. Say so
 		// either way: on the native route the CLI quietly retries, on the chat
@@ -601,6 +607,8 @@ func (s *Server) doForwardCodexOAuth(c *gin.Context, a *auth.Auth, path string, 
 		Model:                model,
 		Input:                counts.InputTokens,
 		Output:               counts.OutputTokens,
+		ReasoningTokens:      counts.ReasoningTokens,
+		UpstreamModel:        upstreamModel,
 		CacheRead:            counts.CacheReadTokens,
 		CostUSD:              costUSD,
 		BilledUSD:            billedUSD,
@@ -888,6 +896,10 @@ type codexStreamResult struct {
 	// inferred from a timestamp column, once wrongly. The transport keeps
 	// adding frames the HTTP path never had; this names them as they appear.
 	committedBy string
+	// upstreamModel is what the terminal event said the provider actually ran.
+	// It is not always what was asked for: a provider under load can serve
+	// something lighter and say so only here.
+	upstreamModel string
 	// firstOutputAt is when upstream produced its first content-bearing event —
 	// not the response headers, and not the response.created/in_progress
 	// preamble it opens with, which arrive immediately and say nothing about
@@ -997,6 +1009,9 @@ func streamSSECodexBackend(c *gin.Context, resp *http.Response, counts *usage.Co
 					if len(payload) > 0 && payload[0] == '{' {
 						lastPayloadType = codexEventType(payload)
 						mergeCodexUsage(counts, extractCodexBackendUsageFromJSON(payload))
+						if m := extractCodexUpstreamModel(payload); m != "" {
+							out.upstreamModel = m
+						}
 
 						if codexerr.Classify(payload) == codexerr.ClassRetryable {
 							if !sentAny {
