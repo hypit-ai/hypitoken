@@ -253,3 +253,55 @@ func TestGuardCollectsEveryAPIKeyCredential(t *testing.T) {
 		t.Fatalf("collected %d API-key credentials, want 2 — a partial union refuses models a relay serves", len(apiKeys))
 	}
 }
+
+// The count endpoints are answered locally exactly when no credential reaches
+// the vendor's own API. This is the whole decision, and getting it wrong in
+// either direction is expensive: forwarding to a reseller returns the 404 that
+// made count_tokens fail 1634 times in fourteen days, and estimating when the
+// vendor is reachable throws away an exact answer for an approximate one.
+func TestTokenCountRoutingByCredential(t *testing.T) {
+	relay := func(id, provider, base string) *auth.Auth {
+		//nolint:gosec // G101: fixed test fixture, not a credential.
+		return &auth.Auth{ID: id, Kind: auth.KindAPIKey, Provider: provider,
+			Label: id, AccessToken: "sk-relay-" + id, BaseURL: base}
+	}
+
+	// Anthropic: an OAuth credential with no override is api.anthropic.com.
+	s := codexGuardServer(&auth.Auth{ID: "oauth-anthropic", Kind: auth.KindOAuth, Provider: auth.ProviderAnthropic, AccessToken: "t"})
+	if !s.reachesVendorForTokenCount(auth.ProviderAnthropic) {
+		t.Error("an unoverridden Anthropic OAuth credential reaches api.anthropic.com, which implements count_tokens")
+	}
+
+	// A base-URL override is a reseller, and no reseller implements the route.
+	s = codexGuardServer(relay("relay-anthropic", auth.ProviderAnthropic, "https://www.duckcoding.ai"))
+	if s.reachesVendorForTokenCount(auth.ProviderAnthropic) {
+		t.Error("a reseller was treated as vendor-reachable — forwarding there is the 404 this exists to stop")
+	}
+
+	if s2 := codexGuardServer(relay("official-anthropic", auth.ProviderAnthropic, "https://api.anthropic.com")); !s2.reachesVendorForTokenCount(auth.ProviderAnthropic) {
+		t.Error("an API key pointed at api.anthropic.com reaches the vendor route")
+	}
+
+	// OpenAI: only an API key on the vendor host. The Codex OAuth backend is
+	// chatgpt.com/backend-api/codex, which has never been seen serving
+	// input_tokens, so it must not be claimed.
+	s = codexGuardServer(wsCred("codex-oauth"))
+	if s.reachesVendorForTokenCount(auth.ProviderOpenAI) {
+		t.Error("the Codex OAuth backend was claimed for input_tokens; that route is unverified there")
+	}
+	s = codexGuardServer(relay("openai-key", auth.ProviderOpenAI, "https://api.openai.com"))
+	if !s.reachesVendorForTokenCount(auth.ProviderOpenAI) {
+		t.Error("an API key on api.openai.com reaches the documented input_tokens route")
+	}
+	s = codexGuardServer(relay("openai-relay", auth.ProviderOpenAI, "https://api.vllmproxy.com"))
+	if s.reachesVendorForTokenCount(auth.ProviderOpenAI) {
+		t.Error("an OpenAI reseller was treated as vendor-reachable")
+	}
+
+	// A disabled credential admits nothing.
+	dead := &auth.Auth{ID: "dead", Kind: auth.KindOAuth, Provider: auth.ProviderAnthropic, AccessToken: "t", Disabled: true}
+	s = codexGuardServer(dead)
+	if s.reachesVendorForTokenCount(auth.ProviderAnthropic) {
+		t.Error("a disabled credential was counted as reachable")
+	}
+}

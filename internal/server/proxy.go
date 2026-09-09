@@ -48,10 +48,6 @@ func (s *Server) handleMessages(c *gin.Context) {
 	s.forward(c, auth.ProviderAnthropic, "/v1/messages")
 }
 
-func (s *Server) handleCountTokens(c *gin.Context) {
-	s.forward(c, auth.ProviderAnthropic, "/v1/messages/count_tokens")
-}
-
 // forward runs the per-provider retry loop and credential routing for a
 // single client request. `provider` picks the credential pool subset; `path`
 // is the provider-native upstream path. doForward still assumes Anthropic

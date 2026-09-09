@@ -195,13 +195,16 @@ func TestParkedNonStreamingTurnFailsOver(t *testing.T) {
 	}, cred)
 	s.codexWSEgress.cfg.StallTimeoutSeconds = 1
 
-	body := []byte(`{"model":"gpt-5.5","stream":false,"messages":[{"role":"user","content":"hello"}]}`)
+	// /v1/responses, not chat/completions: the chat route is deliberately kept
+	// off the WebSocket egress (see eligible), so routing this through it would
+	// never dial the socket and the stall budget would never be consulted.
+	body := []byte(`{"model":"gpt-5.5","stream":false,"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]}]}`)
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
-	c.Request = httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(string(body)))
+	c.Request = httptest.NewRequest("POST", "/v1/responses", strings.NewReader(string(body)))
 
 	start := time.Now()
-	retry, done := s.doForwardCodexOAuth(c, cred, "/v1/chat/completions", body, false, "gpt-5.5", "tok", "tester", "slot-2", time.Now(), 1)
+	retry, done := s.doForwardCodexOAuth(c, cred, "/v1/responses", body, false, "gpt-5.5", "tok", "tester", "slot-2", time.Now(), 1)
 	elapsed := time.Since(start)
 
 	if !retry || done {

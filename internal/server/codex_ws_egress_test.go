@@ -491,39 +491,38 @@ func TestCodexWSEgressServesNonStreamingClient(t *testing.T) {
 	}
 }
 
-func TestCodexWSEgressServesChatCompletionsBridge(t *testing.T) {
+// TestChatCompletionsNeverDialsTheWebSocket replaces a test that asserted the
+// opposite: that the chat bridge served a turn over the WebSocket egress. It
+// did, until production showed what that costs.
+//
+// apicompat translates a chat body into the Responses shape and the result is
+// thinner than anything the vendor client sends — no prompt_cache_key, no
+// reasoning, no tool_choice, no parallel_tool_calls, empty instructions. The
+// HTTP backend serves it; the WebSocket backend accepts it and never schedules
+// it. The path ran at 93-97% every day until the canary was widened to every
+// credential at 22:41 on 2026-09-08 and at 5% the hour after, on two
+// deployments, while /v1/responses was unaffected.
+//
+// The bridge's own translation and frame rendering are covered by
+// codex_chat_bridge_test.go over the HTTP path. What this pins is that a chat
+// request never reaches the dialer at all.
+func TestChatCompletionsNeverDialsTheWebSocket(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	conn := &egressConn{frames: []string{
-		`{"type":"response.created","response":{"id":"resp_1"}}`,
-		`{"type":"response.output_text.delta","delta":"hi"}`,
-		`{"type":"response.completed","response":{"id":"resp_1"},"usage":{"input_tokens":7,"output_tokens":2}}`,
-	}}
+	dialed := false
 	cred := wsCred("ws-chat-account")
 	s := wsEgressServer(t, "https://unused.invalid", func(context.Context, codexws.DialConfig) (codexws.Conn, *http.Response, error) {
-		return conn, &http.Response{StatusCode: http.StatusSwitchingProtocols, Header: http.Header{}}, nil
+		dialed = true
+		return nil, nil, errors.New("chat must never dial the WebSocket")
 	}, cred)
 
 	body := []byte(`{"model":"gpt-5.6-sol","stream":true,"messages":[{"role":"user","content":"hello"}]}`)
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(string(body)))
-	retry, done := s.doForwardCodexOAuth(c, cred, "/v1/chat/completions", body, true, "gpt-5.6-sol", "tok", "tester", "slot-chat", time.Now(), 1)
+	s.doForwardCodexOAuth(c, cred, "/v1/chat/completions", body, true, "gpt-5.6-sol", "tok", "tester", "slot-chat", time.Now(), 1)
 
-	if retry || !done {
-		t.Fatalf("bridged turn did not complete: retry=%v done=%v", retry, done)
-	}
-	got := w.Body.String()
-	if !strings.Contains(got, "chat.completion.chunk") {
-		t.Fatalf("bridge did not render chat frames:\n%s", got)
-	}
-	if !strings.Contains(got, `"hi"`) {
-		t.Fatalf("bridge lost the delta text:\n%s", got)
-	}
-	// The bridge translates the request too: what reached the socket must be a
-	// Responses frame, not the chat body the client sent.
-	frame := conn.sentFrame(t)
-	if frame["type"] != "response.create" || frame["messages"] != nil {
-		t.Fatalf("chat body was not translated before going upstream: %v", frame)
+	if dialed {
+		t.Fatal("a chat/completions turn dialed the WebSocket — the translated body parks there and produces nothing")
 	}
 }
 
