@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	log "github.com/sirupsen/logrus"
@@ -75,6 +76,18 @@ type codexWSEgress struct {
 
 	mu       sync.Mutex
 	cooldown map[string]time.Time
+
+	// Pool effectiveness, sampled rather than logged per turn.
+	//
+	// A turn on a fresh socket pays a TLS handshake the upstream measured at
+	// 0.76-0.78s, which is 15-38% of the 2-5s first byte this transport
+	// currently delivers — so whether the pool is working is worth about as
+	// much as everything else on the latency budget put together. The lease
+	// has always reported it and nothing has ever read it.
+	reusedTurns atomic.Int64
+	freshTurns  atomic.Int64
+	stopStats   chan struct{}
+	statsOnce   sync.Once
 }
 
 // newCodexWSEgress builds the egress from config. It is always constructed and
@@ -100,6 +113,8 @@ func newCodexWSEgress(cfg *config.Config) *codexWSEgress {
 			MaxAge:     up.PoolMaxAge(),
 			MaxEntries: up.PoolMaxEntries,
 		})
+		e.stopStats = make(chan struct{})
+		go e.reportPoolStats()
 		log.Infof("codex ws egress: mode=%s pool(idle=%s max_age=%s max=%d) read_timeout=%s",
 			up.Mode, up.PoolIdle(), up.PoolMaxAge(), up.PoolMaxEntries, up.ReadTimeout())
 	}
@@ -140,8 +155,37 @@ func (e *codexWSEgress) warnUnmatchedAllowlist(pool *auth.Pool) {
 
 // Close releases every pooled socket. Called from Server.Shutdown.
 func (e *codexWSEgress) Close() {
-	if e != nil && e.pool != nil {
+	if e == nil {
+		return
+	}
+	if e.stopStats != nil {
+		e.statsOnce.Do(func() { close(e.stopStats) })
+	}
+	if e.pool != nil {
 		e.pool.Close()
+	}
+}
+
+// reportPoolStats logs the reuse rate once a minute, and only when turns
+// actually happened — an idle deployment should not narrate its idleness.
+func (e *codexWSEgress) reportPoolStats() {
+	t := time.NewTicker(time.Minute)
+	defer t.Stop()
+	var lastReused, lastFresh int64
+	for {
+		select {
+		case <-e.stopStats:
+			return
+		case <-t.C:
+			reused, fresh := e.reusedTurns.Load(), e.freshTurns.Load()
+			dr, df := reused-lastReused, fresh-lastFresh
+			lastReused, lastFresh = reused, fresh
+			if dr+df == 0 {
+				continue
+			}
+			log.Infof("codex ws pool: %d/%d turns reused a socket (%.0f%%) in the last minute, %d entries held",
+				dr, dr+df, 100*float64(dr)/float64(dr+df), e.pool.Len())
+		}
 	}
 }
 
@@ -373,6 +417,12 @@ func (e *codexWSEgress) dial(
 	// aborts a parked turn on the assumption the relay has committed nothing
 	// yet, and that assumption is only true while both agree on which frames
 	// carry no output.
+	if lease.Reused {
+		e.reusedTurns.Add(1)
+	} else {
+		e.freshTurns.Add(1)
+	}
+
 	stream := codexws.NewSSEStream(lease.Conn, codexws.SSEStreamOptions{
 		ReadTimeout:  e.cfg.ReadTimeout(),
 		StallTimeout: e.cfg.StallTimeout(),
