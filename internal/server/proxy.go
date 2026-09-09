@@ -97,6 +97,33 @@ func (s *Server) forward(c *gin.Context, provider, path string) {
 		model = "unknown"
 	}
 
+	// Refuse a Codex model no credential can serve, here, rather than letting
+	// the failover loop discover it. Upstream does not reject an unrecognised
+	// model — it accepts the turn and never schedules it — so without this the
+	// request burns the stall budget on credential after credential and answers
+	// 503 minutes later without ever naming what was wrong. See
+	// codex_model_guard.go.
+	if auth.NormalizeProvider(provider) == auth.ProviderOpenAI {
+		route := s.guardCodexModel(model)
+		if route.reject != nil {
+			writeAPIError(c, provider, APIError{
+				Status: route.reject.Status, Code: route.reject.Code, Message: route.reject.Message,
+				Details: map[string]any{"model": route.reject.Model, "suggestion": route.reject.Suggestion},
+			})
+			s.emitLog(requestlog.Record{
+				Client: clientName, ClientToken: maskClientToken(clientToken), Provider: provider, Model: model,
+				Stream: peek.Stream, Path: path, Status: route.reject.Status,
+				DurationMs: time.Since(start).Milliseconds(), Error: route.reject.Message,
+			})
+			return
+		}
+		if route.apiKeyOnly {
+			// A real model, but one no subscription tier serves. Handing it to
+			// an OAuth credential is exactly what parks the turn.
+			c.Set(codexAPIKeyOnlyModelKey, true)
+		}
+	}
+
 	// SaaS path: balance + per-token caps pre-check; credential group from user's
 	// pricing group. Legacy weekly-budget logic still applies to non-SaaS tokens.
 	saasInfo, saasOK := saasInfoFrom(c)
@@ -233,7 +260,9 @@ func (s *Server) forwardWithFailover(c *gin.Context, provider, path, model, clie
 	tried := make(map[string]bool)
 	attempts := 0
 	var lastDeferred *deferredResponse
-	apiKeyOnly := false
+	// Seeded by the Codex ingress guard for a model only an API-key relay
+	// serves, so the loop never offers it to a subscription credential.
+	apiKeyOnly := c.GetBool(codexAPIKeyOnlyModelKey)
 	preparationFallbackPending := false
 
 	// Convert withheld service errors to the gateway's stable public taxonomy.
@@ -463,6 +492,11 @@ type deferredResponse struct {
 }
 
 const claudePreparationAPIKeyFallbackKey = "claude_preparation_apikey_fallback"
+
+// codexAPIKeyOnlyModelKey marks a request whose model is served by an API-key
+// relay but by no subscription tier, so forwardWithFailover skips OAuth
+// entirely instead of parking a turn on each credential in turn.
+const codexAPIKeyOnlyModelKey = "codex_apikey_only_model" //nolint:gosec // G101: a gin context key, not a credential.
 
 // copySafeRetryHeaders carries the backoff signal from a withheld upstream
 // response onto the synthesized error we return instead.

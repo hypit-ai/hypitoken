@@ -93,6 +93,11 @@ type Server struct {
 	codexRefreshGate refreshGate
 	codexRefresh     func(ctx context.Context, a *auth.Auth) error
 
+	// codexModels caches the API-key half of the servable-model set, so the
+	// ingress guard in codex_model_guard.go can refuse a model no credential
+	// serves without a probe on the request's critical path.
+	codexModels codexModelCatalog
+
 	// codexManifests caches the upstream Codex model manifest per requesting
 	// client version. Pickers refresh at client start, so a cache miss would
 	// otherwise fan several concurrent clients out into as many upstream
