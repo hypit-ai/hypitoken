@@ -298,6 +298,25 @@ type CodexWSUpstreamConfig struct {
 	// WebSocket transport exists to hold on to.
 	ReadTimeoutSeconds int `yaml:"read_timeout_seconds,omitempty"`
 
+	// StallTimeoutSeconds bounds the wait for the turn's first content-bearing
+	// frame — the budget ReadTimeoutSeconds above cannot express. 0 => 90.
+	//
+	// A parked turn heartbeats about every 30s, and each heartbeat resets the
+	// per-frame deadline, so the read above never fires however it is set. In
+	// production that meant 6.8% of Codex turns sat through keepalives for
+	// ~600s until the client gave up, on one credential, without ever failing
+	// over. Past this budget the turn is treated as a pre-output capacity shed:
+	// withheld from the client and retried on another credential, exactly like
+	// the shed frame the HTTP transport would have sent instead.
+	//
+	// 90s is roughly four times the slowest first output ever measured over the
+	// WebSocket (21.1s across 2231 successful turns, p99.9 15.0s). The two
+	// populations do not overlap — a turn either produces early or never — so
+	// the headroom is for a future slower model, not for parked turns.
+	//
+	// 0 disables it and restores the hang; do that only to reproduce one.
+	StallTimeoutSeconds int `yaml:"stall_timeout_seconds,omitempty"`
+
 	// AuthIDs restricts the WebSocket egress to these credential ids. Empty
 	// (the default) means every eligible credential.
 	//
@@ -356,6 +375,9 @@ func (u *CodexWSUpstreamConfig) Normalize() {
 	if u.ReadTimeoutSeconds <= 0 {
 		u.ReadTimeoutSeconds = 180
 	}
+	if u.StallTimeoutSeconds == 0 {
+		u.StallTimeoutSeconds = 90
+	}
 	if u.FallbackCooldownSeconds <= 0 {
 		u.FallbackCooldownSeconds = 600
 	}
@@ -400,6 +422,16 @@ func (u CodexWSUpstreamConfig) PoolMaxAge() time.Duration {
 
 func (u CodexWSUpstreamConfig) ReadTimeout() time.Duration {
 	return time.Duration(u.ReadTimeoutSeconds) * time.Second
+}
+
+// StallTimeout is the normalized first-content budget. A negative configured
+// value disables it — Normalize only fills the zero, so that "off" stays
+// expressible after defaulting.
+func (u CodexWSUpstreamConfig) StallTimeout() time.Duration {
+	if u.StallTimeoutSeconds < 0 {
+		return 0
+	}
+	return time.Duration(u.StallTimeoutSeconds) * time.Second
 }
 
 func (u CodexWSUpstreamConfig) FallbackCooldown() time.Duration {

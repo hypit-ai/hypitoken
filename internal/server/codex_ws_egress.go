@@ -368,7 +368,16 @@ func (e *codexWSEgress) dial(
 		return nil, fmt.Errorf("write response.create: %w", err)
 	}
 
-	stream := codexws.NewSSEStream(lease.Conn, codexws.SSEStreamOptions{ReadTimeout: e.cfg.ReadTimeout()})
+	// ContentFree is codexPreambleEvent — the same predicate the relay uses to
+	// decide what it may withhold. They have to be the one function: the stream
+	// aborts a parked turn on the assumption the relay has committed nothing
+	// yet, and that assumption is only true while both agree on which frames
+	// carry no output.
+	stream := codexws.NewSSEStream(lease.Conn, codexws.SSEStreamOptions{
+		ReadTimeout:  e.cfg.ReadTimeout(),
+		StallTimeout: e.cfg.StallTimeout(),
+		ContentFree:  codexPreambleEvent,
+	})
 	return &codexWSTurn{
 		resp: &http.Response{
 			Status:     "200 OK",

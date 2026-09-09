@@ -1,0 +1,173 @@
+package server
+
+import (
+	"context"
+	"net/http"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/gin-gonic/gin"
+
+	"github.com/wjsoj/cc-core/codexws"
+
+	"github.com/wjsoj/CPA-Claude/internal/config"
+)
+
+// TestStallBudgetStaysInsideTheWithholdCap pins the ordering the whole fix
+// depends on. A stalled turn is converted into a shed only because nothing has
+// reached the client yet, and nothing has reached the client only while the
+// preamble is still buffered. Let the stall budget drift past the withhold cap
+// and the buffer flushes first, wroteAny goes true, the shed branch is skipped
+// and the hang comes straight back — silently, because every other assertion
+// here would still pass.
+func TestStallBudgetStaysInsideTheWithholdCap(t *testing.T) {
+	var u config.CodexWSUpstreamConfig
+	u.Normalize()
+
+	if got := u.StallTimeout(); got >= codexPreOutputWithholdCap {
+		t.Fatalf("stall budget %s >= withhold cap %s: a parked turn would commit its keepalives before the stream gave up on it",
+			got, codexPreOutputWithholdCap)
+	}
+}
+
+// TestStallBudgetDefaultsAndOptOut guards the two config edges: an unset value
+// must arrive as the 90s default rather than as "disabled", and a negative one
+// must genuinely disable the budget so the previous behaviour is reproducible
+// without a code change.
+func TestStallBudgetDefaultsAndOptOut(t *testing.T) {
+	var unset config.CodexWSUpstreamConfig
+	unset.Normalize()
+	if got, want := unset.StallTimeoutSeconds, 90; got != want {
+		t.Fatalf("default stall budget = %ds, want %ds", got, want)
+	}
+
+	off := config.CodexWSUpstreamConfig{StallTimeoutSeconds: -1}
+	off.Normalize()
+	if got := off.StallTimeout(); got != 0 {
+		t.Fatalf("negative stall budget = %s, want 0 (disabled)", got)
+	}
+}
+
+// TestPreambleClassifierIsTheStallPredicate is the cross-check for the comment
+// at the SSEStream construction site. The stream aborts a parked turn assuming
+// the relay withheld everything so far; that holds only while both read the
+// same frames as content-free.
+func TestPreambleClassifierIsTheStallPredicate(t *testing.T) {
+	contentFree := []string{
+		`{"type":"response.created"}`,
+		`{"type":"response.in_progress"}`,
+		`{"type":"keepalive","sequence_number":7}`,
+		`{"type":"response.output_item.added"}`,
+		`{"type":"response.content_part.added"}`,
+		`{"type":"response.reasoning_summary_part.added"}`,
+	}
+	for _, frame := range contentFree {
+		if !codexPreambleEvent([]byte(frame)) {
+			t.Errorf("%s: not content-free to the relay, so the stream must not abort on it either", frame)
+		}
+	}
+
+	content := []string{
+		`{"type":"response.output_text.delta","delta":"hi"}`,
+		`{"type":"response.completed"}`,
+	}
+	for _, frame := range content {
+		if codexPreambleEvent([]byte(frame)) {
+			t.Errorf("%s: treated as content-free — the relay would withhold real output", frame)
+		}
+	}
+}
+
+// parkingConn is the backend that cost production ten hours: it accepts the
+// turn, heartbeats forever, and schedules nothing. Every keepalive resets the
+// per-frame read deadline, so no ReadTimeout can end this — only the stall
+// budget can.
+type parkingConn struct {
+	mu       sync.Mutex
+	deadline time.Time
+	beats    int
+	closed   bool
+}
+
+func (c *parkingConn) WriteJSON(any) error            { return nil }
+func (c *parkingConn) WriteMessage(int, []byte) error { return nil }
+func (c *parkingConn) Ping(time.Time) error           { return nil }
+func (c *parkingConn) SetWriteDeadline(time.Time) error {
+	return nil
+}
+func (c *parkingConn) HandshakeResponse() *http.Response {
+	return &http.Response{StatusCode: http.StatusSwitchingProtocols}
+}
+
+func (c *parkingConn) SetReadDeadline(t time.Time) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.deadline = t
+	return nil
+}
+
+func (c *parkingConn) ReadMessage() (int, []byte, error) {
+	c.mu.Lock()
+	deadline := c.deadline
+	c.beats++
+	c.mu.Unlock()
+
+	const beat = 40 * time.Millisecond
+	if !deadline.IsZero() && time.Until(deadline) < beat {
+		time.Sleep(time.Until(deadline))
+		return 0, nil, stallTimeoutErr{}
+	}
+	time.Sleep(beat)
+	return codexws.TextMessage, []byte(`{"type":"keepalive","sequence_number":1}`), nil
+}
+
+func (c *parkingConn) Close() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.closed = true
+	return nil
+}
+
+type stallTimeoutErr struct{}
+
+func (stallTimeoutErr) Error() string   { return "i/o timeout" }
+func (stallTimeoutErr) Timeout() bool   { return true }
+func (stallTimeoutErr) Temporary() bool { return true }
+
+// TestParkedTurnFailsOverInsteadOfHanging is the end-to-end regression. The
+// production shape was: WebSocket dial succeeds, backend heartbeats, request
+// sits ~600s on one credential, client gives up, attempts stays 1 and not one
+// shed row is written. The turn must instead come back as a retryable
+// pre-output shed with nothing committed to the client.
+func TestParkedTurnFailsOverInsteadOfHanging(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	conn := &parkingConn{}
+	cred := wsCred("parked-account")
+	s := wsEgressServer(t, "https://unused.invalid", func(context.Context, codexws.DialConfig) (codexws.Conn, *http.Response, error) {
+		return conn, &http.Response{StatusCode: http.StatusSwitchingProtocols, Header: http.Header{}}, nil
+	}, cred)
+	// One second rather than the 90s default: the behaviour under test is the
+	// budget expiring, not how long it is.
+	s.codexWSEgress.cfg.StallTimeoutSeconds = 1
+
+	start := time.Now()
+	w, retry, done := runCodexTurn(t, s, cred, wsTurnBody())
+	elapsed := time.Since(start)
+
+	if !retry || done {
+		t.Fatalf("parked turn: retry=%v done=%v, want retry=true done=false — it has to move to another credential", retry, done)
+	}
+	if elapsed > 10*time.Second {
+		t.Fatalf("parked turn took %s to give up: the stall budget did not bound it", elapsed)
+	}
+	if body := w.Body.String(); body != "" {
+		t.Fatalf("parked turn committed %q to the client; a withheld shed must leave the response untouched", body)
+	}
+	if conn.beats < 2 {
+		t.Fatalf("only %d reads: the test never reached the parked state it is about", conn.beats)
+	}
+	if !conn.closed {
+		t.Fatal("the parked socket was kept: it still has an unscheduled turn on it, and the next turn would read this one's leftovers")
+	}
+}
