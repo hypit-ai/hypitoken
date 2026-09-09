@@ -1076,14 +1076,22 @@ func streamSSECodexBackend(c *gin.Context, resp *http.Response, counts *usage.Co
 				terminal = false
 			}
 
-			// The blank line that closes an SSE event belongs to the event
-			// before it, so while an opener is buffered its terminator has to be
-			// buffered too. Left alone it matches none of the cases above, falls
-			// straight through to the emit switch as a line of its own, and
-			// there it both flushes the buffer early and marks the stream as
-			// having produced output — which is exactly what forecloses the
-			// failover this buffer exists to preserve.
-			if !sentAny && !shedding && len(preamble) > 0 && len(line) > 0 && len(bytes.TrimSpace(line)) == 0 {
+			// The blank line that closes an SSE event belongs to the event before it,
+			// and while nothing has committed yet that event was either buffered into
+			// the preamble or dropped outright by the scrubber. Either way its
+			// terminator has to follow it rather than slip out alone: left to fall
+			// through to the emit switch it becomes the first byte written, which both
+			// flushes the buffer early and marks the stream as having produced output —
+			// exactly what forecloses the failover this buffer exists to preserve.
+			//
+			// This used to also require a non-empty preamble, which held for a buffered
+			// frame and failed for a dropped one: cc-core drops codex.response.metadata
+			// whole, so both of its lines vanished and the orphaned blank line committed
+			// the response on its own. It was invisible while codex.rate_limits was
+			// still committing first, and took over the moment that was fixed — the
+			// truncation log named the culprit as an empty event type, which is what an
+			// orphaned terminator looks like.
+			if !sentAny && !shedding && len(line) > 0 && len(bytes.TrimSpace(line)) == 0 {
 				preamble = append(preamble, line...)
 				continue
 			}

@@ -294,3 +294,75 @@ func TestRateLimitsFrameDoesNotForecloseFailover(t *testing.T) {
 		t.Fatalf("committed %q to the client before parking; the failover is no longer invisible", body)
 	}
 }
+
+// metadataThenParkConn opens with the one frame cc-core drops whole, then
+// parks. Both of that frame's lines are removed by the scrubber, leaving its
+// blank terminator with nothing in front of it.
+type metadataThenParkConn struct {
+	mu       sync.Mutex
+	deadline time.Time
+	n        int
+}
+
+func (c *metadataThenParkConn) WriteJSON(any) error              { return nil }
+func (c *metadataThenParkConn) WriteMessage(int, []byte) error   { return nil }
+func (c *metadataThenParkConn) Ping(time.Time) error             { return nil }
+func (c *metadataThenParkConn) SetWriteDeadline(time.Time) error { return nil }
+func (c *metadataThenParkConn) Close() error                     { return nil }
+func (c *metadataThenParkConn) HandshakeResponse() *http.Response {
+	return &http.Response{StatusCode: http.StatusSwitchingProtocols}
+}
+
+func (c *metadataThenParkConn) SetReadDeadline(t time.Time) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.deadline = t
+	return nil
+}
+
+func (c *metadataThenParkConn) ReadMessage() (int, []byte, error) {
+	c.mu.Lock()
+	deadline := c.deadline
+	c.n++
+	n := c.n
+	c.mu.Unlock()
+
+	const beat = 40 * time.Millisecond
+	if !deadline.IsZero() && time.Until(deadline) < beat {
+		time.Sleep(time.Until(deadline))
+		return 0, nil, stallTimeoutErr{}
+	}
+	time.Sleep(beat)
+	if n == 1 {
+		return codexws.TextMessage, []byte(`{"type":"codex.response.metadata","headers":{"x-codex-turn-state":"gAAAAA","x-models-etag":"W/\"abc\""}}`), nil
+	}
+	return codexws.TextMessage, []byte(`{"type":"keepalive","sequence_number":1}`), nil
+}
+
+// TestDroppedFrameTerminatorDoesNotCommit is the regression for the frame that
+// turned out to be committing the response after codex.rate_limits stopped:
+// none. cc-core drops codex.response.metadata whole, so its event and data
+// lines both vanish — and the blank line that terminated them fell through and
+// became the first byte written, closing the withhold window on its own.
+//
+// Production named it as `committed by ""`, an empty event type, which is
+// exactly what an orphaned terminator looks like and is not something any
+// amount of reading the frame list would have suggested.
+func TestDroppedFrameTerminatorDoesNotCommit(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	conn := &metadataThenParkConn{}
+	cred := wsCred("metadata-then-park")
+	s := wsEgressServer(t, "https://unused.invalid", func(context.Context, codexws.DialConfig) (codexws.Conn, *http.Response, error) {
+		return conn, &http.Response{StatusCode: http.StatusSwitchingProtocols, Header: http.Header{}}, nil
+	}, cred)
+	s.codexWSEgress.cfg.StallTimeoutSeconds = 1
+
+	w, retry, done := runCodexTurn(t, s, cred, wsTurnBody())
+
+	if !retry || done {
+		t.Fatalf("retry=%v done=%v, want retry=true done=false — a dropped frame's terminator must not commit the response", retry, done)
+	}
+	if body := w.Body.String(); body != "" {
+		t.Fatalf("committed %q to the client — the orphaned blank line escaped", body)
+	}
+}
