@@ -106,7 +106,7 @@ export function AppShell() {
             "radial-gradient(45% 45% at 100% 8%, color-mix(in oklch, var(--info, var(--primary)) 7%, transparent), transparent 72%)",
         }}
       />
-      <Header />
+      <Header unread={unread} />
       <div className="mx-auto flex max-w-7xl gap-6 px-4 py-6 md:px-6 lg:py-10">
         <aside className="hidden w-56 flex-shrink-0 lg:block">
           <nav className="sticky top-24 flex flex-col gap-1">
@@ -175,7 +175,9 @@ function FloatingDiscord() {
   );
 }
 
-function Header() {
+// unread is threaded down from AppShell's single useTicketUnread() call —
+// see the MobileMenu prop comment for why this can't fetch its own copy.
+function Header({ unread }: { unread: number }) {
   const { user, signOut } = useAuth();
   const nav = useNavigate();
   const { t } = useTranslation();
@@ -259,7 +261,7 @@ function Header() {
               </Button>
             )}
           </div>
-          <MobileMenu variant="app" />
+          <MobileMenu variant="app" unread={unread} />
         </div>
       </header>
     </div>
@@ -276,6 +278,11 @@ function Header() {
 export function SiteNav() {
   const { user } = useAuth();
   const { t } = useTranslation();
+  // No prompt here — the entry toast belongs to AppShell alone. This still
+  // needs its own poll (SiteNav never mounts alongside AppShell) so the
+  // drawer's support badge works for a signed-in user browsing marketing
+  // pages; passing it down avoids yet another private hook inside MobileMenu.
+  const { unread } = useTicketUnread();
   const linkCls = ({ isActive }: { isActive: boolean }) =>
     cn(
       "rounded-full px-3 py-1.5 text-sm transition-colors",
@@ -332,7 +339,7 @@ export function SiteNav() {
             </>
           )}
         </div>
-        <MobileMenu variant="public" />
+        <MobileMenu variant="public" unread={unread} />
       </div>
     </header>
   );

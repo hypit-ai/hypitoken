@@ -1,7 +1,54 @@
-import { defineConfig } from "vite";
-import react from "@vitejs/plugin-react";
-import tailwindcss from "@tailwindcss/vite";
 import path from "node:path";
+import tailwindcss from "@tailwindcss/vite";
+import react from "@vitejs/plugin-react";
+import { defineConfig, type Plugin } from "vite";
+
+// Every route paints text in Bricolage Grotesque (--font-sans/--font-display)
+// and JetBrains Mono (--font-mono, used wherever a value is tabular-nums —
+// balances, token IDs, credential counters). @fontsource-variable only
+// declares these via @font-face in CSS, so the browser can't discover the
+// woff2 until it has fetched and parsed the stylesheet — late enough to sit
+// on the render-blocking path on a cold cache. A <link rel=preload> fixes
+// that, but Vite content-hashes the filename on every build, so the tag has
+// to be assembled from the actual emitted bundle rather than hardcoded.
+//
+// Only the plain "latin" subset (U+0000-00FF) is preloaded — the same
+// package also ships latin-ext and vietnamese subsets for glyphs this UI
+// never renders (Chinese falls back to system-ui, not these fonts), and
+// preloading those would just compete with the two that actually matter.
+const CRITICAL_FONT_RE = [
+  /^bricolage-grotesque-latin-wght-normal-.*\.woff2$/,
+  /^jetbrains-mono-latin-wght-normal-.*\.woff2$/,
+];
+
+function preloadCriticalFonts(): Plugin {
+  return {
+    name: "preload-critical-fonts",
+    apply: "build",
+    // ctx.bundle is only populated once Vite has finished emitting assets,
+    // which happens on the default ("post") transform pass — an explicit
+    // `order: "pre"` runs before that and sees ctx.bundle as undefined, so
+    // this deliberately uses the default order and instead wins placement by
+    // inserting right after <title> rather than at the end of <head>: a
+    // preload's fetch fires the instant the parser reaches the tag, so
+    // landing ahead of the script/modulepreload/stylesheet tags Vite injects
+    // is what actually matters, not hook order.
+    transformIndexHtml(html, ctx) {
+      const bundle = ctx.bundle;
+      if (!bundle) return html;
+      const hrefs = Object.keys(bundle)
+        .filter((fileName) => CRITICAL_FONT_RE.some((re) => re.test(path.basename(fileName))))
+        .map((fileName) => `/${fileName}`);
+      if (hrefs.length === 0) return html;
+      const links = hrefs
+        .map(
+          (href) => `<link rel="preload" as="font" type="font/woff2" href="${href}" crossorigin>`,
+        )
+        .join("\n    ");
+      return html.replace("<title>", `${links}\n    <title>`);
+    },
+  };
+}
 
 // packageOf extracts the npm package name from a module id, so chunk
 // assignment can match on the package itself rather than on a substring of
@@ -63,7 +110,7 @@ const MARKDOWN_PREFIXES = [
 // SaaS SPA mounted at root by the Go server. Use absolute base so asset URLs
 // remain stable across deep links like /app/billing or /pricing.
 export default defineConfig({
-  plugins: [react(), tailwindcss()],
+  plugins: [react(), tailwindcss(), preloadCriticalFonts()],
   base: "/",
   resolve: {
     alias: {

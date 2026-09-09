@@ -20,7 +20,6 @@ import { LanguageToggle } from "@/components/language-toggle";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@/hooks/use-auth";
-import { useTicketUnread } from "@/hooks/use-ticket-unread";
 import { cn, fmtUSD } from "@/lib/utils";
 
 // MobileMenu is the single off-canvas drawer used by every header in the
@@ -45,16 +44,20 @@ interface Props {
   // Which set of routes to show. "public" hides /app/* items, "app" shows
   // them after the marketing links. Operator items are gated on user.role.
   variant: "public" | "app";
+  // Support-ticket unread badge, sourced from the caller's own
+  // useTicketUnread() rather than a second instance in here — AppShell and
+  // SiteNav each already poll it for their own sidebar/toast, and this
+  // component is mounted alongside both, so a private hook here doubled
+  // the GET /me/tickets/unread on every app page load.
+  unread?: number;
 }
 
-export function MobileMenu({ variant }: Props) {
+export function MobileMenu({ variant, unread = 0 }: Props) {
   const [open, setOpen] = useState(false);
   const { user, signOut } = useAuth();
   const { t } = useTranslation();
   const nav = useNavigate();
   const loc = useLocation();
-  // Badge only — the entry toast is owned by the AppShell instance.
-  const { unread } = useTicketUnread();
 
   const marketing: NavItem[] = [
     { to: "/", label: t("nav.home"), icon: LayoutDashboard, end: true },
