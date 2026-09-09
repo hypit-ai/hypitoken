@@ -42,12 +42,33 @@ func TestCodexPreambleExcludesAnythingUserVisible(t *testing.T) {
 	}
 }
 
-// Anything unparseable or unknown commits, which is the safe default: holding
-// back an event we do not understand risks swallowing real output.
+// Anything unparseable or of an unknown type commits, which is the safe
+// default: holding back an event we do not understand risks swallowing real
+// output.
 func TestCodexPreambleFailsClosed(t *testing.T) {
-	for _, ev := range []string{`not json`, `{}`, `{"type":"response.some_future_event"}`, ``} {
+	for _, ev := range []string{`not json`, `{"type":"response.some_future_event"}`, ``} {
 		if codexPreambleEvent([]byte(ev)) {
 			t.Errorf("%q must not be withheld — unknown events have to commit", ev)
+		}
+	}
+}
+
+// An event that declares no type at all is the exception to failing closed, and
+// it earned the exception in production. Over the WebSocket a typeless frame
+// renders as a bare `data:` line (codexws.appendSSEEvent writes no event line
+// without a type), which fell straight through to the emit path and committed
+// the response before response.created had arrived. The truncation log named
+// the culprit `committed by ""`, and it accounted for 141 of 326 truncated
+// streams in a seven-hour window: each one a turn the backend then parked, cut
+// at the stall budget, with the failover already foreclosed.
+//
+// Withholding is safe because every event a client renders names itself, and
+// the buffer is released in upstream's original order the moment any typed
+// event arrives — or at codexPreOutputWithholdCap, or at end of stream.
+func TestCodexPreambleWithholdsATypelessFrame(t *testing.T) {
+	for _, ev := range []string{`{}`, `{"type":""}`, `{"sequence_number":3}`} {
+		if !codexPreambleEvent([]byte(ev)) {
+			t.Errorf("%s declares no type, so it cannot be model output — committing on it forecloses the failover a parked turn needs", ev)
 		}
 	}
 }

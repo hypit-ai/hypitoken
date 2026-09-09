@@ -295,6 +295,16 @@ func (s *Server) doForwardCodexOAuth(c *gin.Context, a *auth.Auth, path string, 
 		return false, true
 	}
 
+	// The stall budget exists to convert a turn the backend parked into a
+	// failover, and the failover is gone at the first byte the client receives.
+	// Retire it there: past the commit it can only cut a slow turn into a
+	// truncated one, which was the single largest source of truncated Codex
+	// streams the day it shipped.
+	//
+	// Captured here rather than inside the relay because the observer below
+	// wraps the body and hides the method — the first version of this fix read
+	// the wrapper and silently did nothing.
+	disarmStall := codexStallDisarmer(resp.Body)
 	// Observe original bytes before protocol conversion or response scrubbing.
 	tierObserver := servicetier.ObserveBody(resp.Body)
 	resp.Body = tierObserver
@@ -365,9 +375,9 @@ func (s *Server) doForwardCodexOAuth(c *gin.Context, a *auth.Auth, path string, 
 		// client. They report the same codexStreamResult, so everything
 		// downstream is shared.
 		if isChat {
-			res = streamCodexAsChatCompletions(c, resp.Body, &counts, model, chatStreamWantsUsage(body), func() { writeSSEResponseHeaders(c, resp) })
+			res = streamCodexAsChatCompletions(c, resp.Body, &counts, model, chatStreamWantsUsage(body), func() { disarmStall(); writeSSEResponseHeaders(c, resp) })
 		} else {
-			res = streamSSECodexBackend(c, resp, &counts, func() { writeSSEResponseHeaders(c, resp) })
+			res = streamSSECodexBackend(c, resp, &counts, func() { disarmStall(); writeSSEResponseHeaders(c, resp) })
 		}
 		// A turn the backend parked and never scheduled is a capacity refusal
 		// that happens to be shaped like silence: over the WebSocket it arrives
@@ -483,8 +493,8 @@ func (s *Server) doForwardCodexOAuth(c *gin.Context, a *auth.Auth, path string, 
 				// egress change is judged on: a WebSocket carries protocol-level
 				// ping/pong across the silences that truncate an idle HTTP
 				// stream, so if it is working, this line stops saying "ws".
-				log.Warnf("codex oauth: %s stream ended before terminal event (truncated upstream) via %s after %s (committed by %q): %v",
-					upstreamTransport, a.ID, time.Since(start).Round(time.Millisecond), res.committedBy, rerr)
+				log.Warnf("codex oauth: %s stream ended before terminal event (truncated upstream) via %s after %s (committed by %q%s): %v",
+					upstreamTransport, a.ID, time.Since(start).Round(time.Millisecond), res.committedBy, codexFatalCodeSuffix(res.fatalCode), rerr)
 			}
 		}
 	default:
@@ -782,6 +792,19 @@ func codexPreambleEvent(payload []byte) bool {
 	if json.Unmarshal(payload, &ev) != nil {
 		return false
 	}
+	// A frame that declares no type at all cannot be model output: every event
+	// a client renders names itself. Over the WebSocket such a frame renders as
+	// a bare `data:` line — codexws.appendSSEEvent omits the event line when
+	// the type is empty — and emitting it committed the response before a
+	// single delta had arrived.
+	//
+	// That is what `committed by ""` names in the truncation log, and it was
+	// the most common way the withhold window closed: 141 of one afternoon's
+	// 326 truncated streams were a turn committed by an untyped frame, parked
+	// by the backend, and then cut at the stall budget with no failover left.
+	if ev.Type == "" {
+		return true
+	}
 	return codexContentFreeEvents[ev.Type]
 }
 
@@ -896,6 +919,11 @@ type codexStreamResult struct {
 	// inferred from a timestamp column, once wrongly. The transport keeps
 	// adding frames the HTTP path never had; this names them as they appear.
 	committedBy string
+	// fatalCode is the vendor error code of an error frame the classifier
+	// called fatal and therefore forwarded — which is what commits the
+	// response. Recorded so a code that is really a transient account fault can
+	// be told apart from a genuine rejection without another day of guessing.
+	fatalCode string
 	// upstreamModel is what the terminal event said the provider actually ran.
 	// It is not always what was asked for: a provider under load can serve
 	// something lighter and say so only here.
@@ -937,6 +965,67 @@ type codexStreamResult struct {
 //
 // gin's ResponseWriter is not goroutine-safe, so the keepalive goroutine and the
 // read loop share one mutex around every Write/Flush.
+// codexStallDisarmer retires the WebSocket stall budget once a relay has
+// committed the response.
+//
+// The budget exists to convert a turn the backend parked into a failover, and
+// the failover is gone the moment the first byte reaches the client. Left armed
+// it can only cut a slow turn into a truncated one — the single largest source
+// of truncated Codex streams the day the budget shipped. The HTTP transport has
+// no such budget and returns a no-op.
+// codexErrorFrameCode reads the vendor error code out of an error frame, in
+// both the shapes the Codex backend uses. It exists for the log line below:
+// an error frame the classifier calls fatal is forwarded verbatim, which
+// commits the response and forecloses failover, so when the socket then dies
+// the turn reaches the client as a truncation. Sixty of those landed in one
+// seven-hour window under a single label, with nothing recorded to say which
+// code produced them or whether it should have been retryable.
+func codexErrorFrameCode(payload []byte) string {
+	var f struct {
+		Error *struct {
+			Code string `json:"code"`
+			Type string `json:"type"`
+		} `json:"error"`
+		Response *struct {
+			Error *struct {
+				Code string `json:"code"`
+				Type string `json:"type"`
+			} `json:"error"`
+		} `json:"response"`
+	}
+	if json.Unmarshal(payload, &f) != nil {
+		return ""
+	}
+	e := f.Error
+	if e == nil && f.Response != nil {
+		e = f.Response.Error
+	}
+	if e == nil {
+		return ""
+	}
+	if e.Code != "" {
+		return e.Code
+	}
+	return e.Type
+}
+
+// codexFatalCodeSuffix annotates the truncation log with the vendor code that
+// committed the response, when one did. Empty for every other commit so the
+// line keeps its shape.
+func codexFatalCodeSuffix(code string) string {
+	if code == "" {
+		return ""
+	}
+	return " code=" + code
+}
+
+func codexStallDisarmer(r any) func() {
+	if d, ok := r.(interface{ DisarmStall() }); ok {
+		return d.DisarmStall
+	}
+	return func() {}
+}
+
 func streamSSECodexBackend(c *gin.Context, resp *http.Response, counts *usage.Counts, commit func()) codexStreamResult {
 	flusher, _ := c.Writer.(http.Flusher)
 	reader := newLineReader(resp.Body)
@@ -1049,6 +1138,15 @@ func streamSSECodexBackend(c *gin.Context, resp *http.Response, counts *usage.Co
 						// ClassFatal frames are forwarded verbatim: retrying
 						// them elsewhere would fail identically, and the client
 						// needs the real reason.
+						//
+						// Name the code when one of them is what commits the
+						// response, so a fatal that is really a transient
+						// account fault — the pattern behind the 1006 closures
+						// that follow these frames — can be told apart from a
+						// genuine rejection instead of being counted as one.
+						if !sentAny && codexerr.Classify(payload) == codexerr.ClassFatal {
+							out.fatalCode = codexErrorFrameCode(payload)
+						}
 
 						if codexTerminalEvent(payload) && !shedding {
 							terminal = true

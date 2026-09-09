@@ -49,6 +49,7 @@ import (
 func streamCodexAsChatCompletions(c *gin.Context, upstream io.Reader, counts *usage.Counts, model string, includeUsage bool, commit func()) codexStreamResult {
 	flusher, _ := c.Writer.(http.Flusher)
 	reader := newLineReader(upstream)
+	disarmStall := codexStallDisarmer(upstream)
 	st := apicompat.NewStreamState(model, includeUsage, time.Now().Unix())
 	var out codexStreamResult
 
@@ -71,6 +72,9 @@ func streamCodexAsChatCompletions(c *gin.Context, upstream io.Reader, counts *us
 				frame, pending = pending[0], pending[1:]
 				if !sentAny {
 					out.firstOutputAt = time.Now()
+					// Same reason as the native relay: the failover the stall
+					// budget protects ends at the first committed byte.
+					disarmStall()
 				}
 				sentAny = true
 				return frame, apicompat.IsDoneFrame(frame), nil

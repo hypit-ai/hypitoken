@@ -366,3 +366,152 @@ func TestDroppedFrameTerminatorDoesNotCommit(t *testing.T) {
 		t.Fatalf("committed %q to the client — the orphaned blank line escaped", body)
 	}
 }
+
+// typelessThenParkConn opens with a JSON frame that declares no `type` at all,
+// then parks. Over the WebSocket such a frame renders as a bare `data:` line —
+// codexws.appendSSEEvent writes no event line without a type — which is the
+// shape that fell through the relay's classifier and committed the response.
+type typelessThenParkConn struct {
+	mu       sync.Mutex
+	deadline time.Time
+	n        int
+}
+
+func (c *typelessThenParkConn) WriteJSON(any) error              { return nil }
+func (c *typelessThenParkConn) WriteMessage(int, []byte) error   { return nil }
+func (c *typelessThenParkConn) Ping(time.Time) error             { return nil }
+func (c *typelessThenParkConn) SetWriteDeadline(time.Time) error { return nil }
+func (c *typelessThenParkConn) Close() error                     { return nil }
+func (c *typelessThenParkConn) HandshakeResponse() *http.Response {
+	return &http.Response{StatusCode: http.StatusSwitchingProtocols}
+}
+
+func (c *typelessThenParkConn) SetReadDeadline(t time.Time) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.deadline = t
+	return nil
+}
+
+func (c *typelessThenParkConn) ReadMessage() (int, []byte, error) {
+	c.mu.Lock()
+	deadline := c.deadline
+	c.n++
+	n := c.n
+	c.mu.Unlock()
+
+	const beat = 40 * time.Millisecond
+	if !deadline.IsZero() && time.Until(deadline) < beat {
+		time.Sleep(time.Until(deadline))
+		return 0, nil, stallTimeoutErr{}
+	}
+	time.Sleep(beat)
+	if n == 1 {
+		return codexws.TextMessage, []byte(`{"sequence_number":0,"obfuscation":"aGVsbG8"}`), nil
+	}
+	return codexws.TextMessage, []byte(`{"type":"keepalive","sequence_number":1}`), nil
+}
+
+// TestTypelessFrameDoesNotCommit is the regression for the largest single
+// source of truncated Codex streams the day the stall budget shipped: 141 of
+// 326, all logged as `committed by ""`.
+//
+// A frame with no type cannot be model output, but the relay only recognised
+// content-free events by name, so an unnamed one went straight to the client —
+// committing the response before response.created had even arrived. The
+// backend then parked the turn, the budget fired, and the failover it exists to
+// enable had already been foreclosed by that first stray frame. The client saw
+// a stream that stopped after two minutes.
+func TestTypelessFrameDoesNotCommit(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	conn := &typelessThenParkConn{}
+	cred := wsCred("typeless-then-park")
+	s := wsEgressServer(t, "https://unused.invalid", func(context.Context, codexws.DialConfig) (codexws.Conn, *http.Response, error) {
+		return conn, &http.Response{StatusCode: http.StatusSwitchingProtocols, Header: http.Header{}}, nil
+	}, cred)
+	s.codexWSEgress.cfg.StallTimeoutSeconds = 1
+
+	w, retry, done := runCodexTurn(t, s, cred, wsTurnBody())
+
+	if !retry || done {
+		t.Fatalf("retry=%v done=%v, want retry=true done=false — a frame with no type must not commit the response", retry, done)
+	}
+	if body := w.Body.String(); body != "" {
+		t.Fatalf("committed %q to the client — the typeless frame escaped the withhold", body)
+	}
+}
+
+// deltaThenLongParkConn produces one real content delta and then goes quiet for
+// longer than the read timeout. It is the post-commit case: the client already
+// has bytes, so there is no failover left to protect.
+type deltaThenLongParkConn struct {
+	mu       sync.Mutex
+	deadline time.Time
+	n        int
+}
+
+func (c *deltaThenLongParkConn) WriteJSON(any) error              { return nil }
+func (c *deltaThenLongParkConn) WriteMessage(int, []byte) error   { return nil }
+func (c *deltaThenLongParkConn) Ping(time.Time) error             { return nil }
+func (c *deltaThenLongParkConn) SetWriteDeadline(time.Time) error { return nil }
+func (c *deltaThenLongParkConn) Close() error                     { return nil }
+func (c *deltaThenLongParkConn) HandshakeResponse() *http.Response {
+	return &http.Response{StatusCode: http.StatusSwitchingProtocols}
+}
+
+func (c *deltaThenLongParkConn) SetReadDeadline(t time.Time) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.deadline = t
+	return nil
+}
+
+func (c *deltaThenLongParkConn) ReadMessage() (int, []byte, error) {
+	c.mu.Lock()
+	deadline := c.deadline
+	c.n++
+	n := c.n
+	c.mu.Unlock()
+
+	if n == 1 {
+		time.Sleep(20 * time.Millisecond)
+		return codexws.TextMessage, []byte(`{"type":"response.output_text.delta","delta":"hi"}`), nil
+	}
+	// Quieter than either budget from here on, so whichever deadline is armed
+	// is the one that ends the turn — which is exactly what the test measures.
+	if !deadline.IsZero() {
+		time.Sleep(time.Until(deadline))
+	}
+	return 0, nil, stallTimeoutErr{}
+}
+
+// TestCommittedTurnIsNotCutByTheStallBudget is the other half of the same
+// production day. The budget converts a parked turn into a failover, and the
+// failover is gone at the first committed byte — so past that point firing can
+// only turn a slow turn into a truncated one, which is strictly worse for the
+// client than waiting.
+//
+// The two deadlines are deliberately far apart so the elapsed time names which
+// one fired: the stall budget at 1s, the read timeout at 3s. An armed budget
+// ends the turn at ~1s; a retired one lets the read timeout have it at ~3s.
+func TestCommittedTurnIsNotCutByTheStallBudget(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	conn := &deltaThenLongParkConn{}
+	cred := wsCred("delta-then-long-park")
+	s := wsEgressServer(t, "https://unused.invalid", func(context.Context, codexws.DialConfig) (codexws.Conn, *http.Response, error) {
+		return conn, &http.Response{StatusCode: http.StatusSwitchingProtocols, Header: http.Header{}}, nil
+	}, cred)
+	s.codexWSEgress.cfg.StallTimeoutSeconds = 1
+	s.codexWSEgress.cfg.ReadTimeoutSeconds = 3
+
+	began := time.Now()
+	w, _, _ := runCodexTurn(t, s, cred, wsTurnBody())
+	elapsed := time.Since(began)
+
+	if body := w.Body.String(); !strings.Contains(body, "response.output_text.delta") {
+		t.Fatalf("the delta never reached the client: %q", body)
+	}
+	if elapsed < 2*time.Second {
+		t.Fatalf("the turn ended after %s — the stall budget was still armed past the commit, so a slow turn was cut into a truncated one for a failover that no longer existed", elapsed.Round(time.Millisecond))
+	}
+}

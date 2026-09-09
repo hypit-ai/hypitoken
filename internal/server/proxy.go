@@ -216,6 +216,20 @@ func (s *Server) forward(c *gin.Context, provider, path string) {
 // instead of a synthetic 503, so clients back off correctly.
 func (s *Server) forwardWithFailover(c *gin.Context, provider, path, model, clientToken, clientGroup, clientName, slotID string, body []byte, stream bool, start time.Time) {
 	const maxAttempts = 12
+	// A retry only helps while someone is still waiting for the answer.
+	// maxAttempts alone assumed attempts were cheap, which held while a
+	// credential-level failure was an immediate 429 or 401. It stopped holding
+	// when the Codex WebSocket path learned to recognise a turn the backend
+	// parked: that attempt costs the whole stall budget before it sheds, and
+	// twelve of them in series is a twenty-minute request. Production recorded
+	// one on attempt 10 at 18m25s, long after the client had given up, still
+	// holding a pool slot and still burning credentials.
+	//
+	// Four minutes sits under the five-minute idle deadline Codex clients keep
+	// on a Responses stream, so the loop stops before the caller does. It
+	// bounds only the decision to *start* another attempt — a single long
+	// stream that is actually producing output runs as long as it likes.
+	const failoverDeadline = 4 * time.Minute
 	tried := make(map[string]bool)
 	attempts := 0
 	var lastDeferred *deferredResponse
@@ -239,6 +253,11 @@ func (s *Server) forwardWithFailover(c *gin.Context, provider, path, model, clie
 	}
 
 	for attempt := 0; attempt < maxAttempts; attempt++ {
+		if attempt > 0 && time.Since(start) > failoverDeadline {
+			log.Warnf("proxy: giving up after %s across %d credentials — past the failover deadline (model=%s)",
+				time.Since(start).Round(time.Second), attempts, model)
+			break
+		}
 		excludeIDs := make([]string, 0, len(tried))
 		for id := range tried {
 			excludeIDs = append(excludeIDs, id)
