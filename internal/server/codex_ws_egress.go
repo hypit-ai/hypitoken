@@ -209,6 +209,29 @@ func (e *codexWSEgress) eligible(a *auth.Auth, path string, snapBaseURL string) 
 		// There is no WebSocket equivalent to forward it over.
 		return false
 	}
+	if path == "/v1/chat/completions" {
+		// A chat/completions turn is not a Codex turn. It is translated into
+		// the Responses shape by apicompat, and what comes out is thinner than
+		// anything the vendor client sends: no prompt_cache_key, no reasoning,
+		// no tool_choice, no parallel_tool_calls, and an empty instructions
+		// string. The HTTP backend serves that body without complaint. The
+		// WebSocket backend accepts it and never schedules it — the turn parks,
+		// heartbeats, and produces nothing.
+		//
+		// Production dated it to the minute. The WebSocket canary was widened
+		// to every credential at 22:41 on 2026-09-08; chat/completions had run
+		// at 93-97% success every day up to that hour and collapsed to 5% in
+		// the next one, on both this deployment and its sibling, while
+		// /v1/responses carried on at 95% over the same credentials and the
+		// same transport. Nineteen hours passed before anyone noticed, because
+		// the path only carries six turns an hour.
+		//
+		// Which missing field the backend is holding out for is not yet known:
+		// the obvious A/B is confounded by session stickiness, so a probe with
+		// a fresh token parks whatever body it sends. Until that is answered,
+		// this path keeps the transport it was working on.
+		return false
+	}
 	if strings.TrimSpace(snapBaseURL) != "" {
 		// A per-credential base URL override points at a vendor relay. Relays
 		// resell the Responses HTTP API; assuming one terminates WebSockets is

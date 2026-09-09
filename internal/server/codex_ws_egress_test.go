@@ -526,3 +526,30 @@ func TestCodexWSEgressServesChatCompletionsBridge(t *testing.T) {
 		t.Fatalf("chat body was not translated before going upstream: %v", frame)
 	}
 }
+
+// TestChatCompletionsStaysOnHTTP is the regression for the night the WebSocket
+// canary was widened to every credential.
+//
+// chat/completions is not a Codex turn — apicompat translates it into the
+// Responses shape and what comes out has no prompt_cache_key, no reasoning, no
+// tool_choice, no parallel_tool_calls and an empty instructions string. The
+// HTTP backend serves that; the WebSocket backend accepts it and parks it. The
+// path ran at 93-97% every day until 22:41 on 2026-09-08 and at 5% the hour
+// after, on two independent deployments, while /v1/responses was unaffected on
+// the same credentials over the same transport.
+func TestChatCompletionsStaysOnHTTP(t *testing.T) {
+	cred := wsCred("eligibility")
+	s := wsEgressServer(t, "https://unused.invalid", func(context.Context, codexws.DialConfig) (codexws.Conn, *http.Response, error) {
+		return nil, nil, errors.New("dial must not be reached")
+	}, cred)
+
+	if s.codexWSEgress.eligible(cred, "/v1/chat/completions", "") {
+		t.Error("chat/completions was routed over the WebSocket — the translated body parks there and the turn produces nothing")
+	}
+	if s.codexWSEgress.eligible(cred, "/v1/responses/compact", "") {
+		t.Error("compact has no WebSocket equivalent and must stay on HTTP")
+	}
+	if !s.codexWSEgress.eligible(cred, "/v1/responses", "") {
+		t.Error("/v1/responses is the path this transport exists for and must remain eligible")
+	}
+}
