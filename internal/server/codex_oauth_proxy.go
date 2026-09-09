@@ -477,7 +477,8 @@ func (s *Server) doForwardCodexOAuth(c *gin.Context, a *auth.Auth, path string, 
 				// egress change is judged on: a WebSocket carries protocol-level
 				// ping/pong across the silences that truncate an idle HTTP
 				// stream, so if it is working, this line stops saying "ws".
-				log.Warnf("codex oauth: %s stream ended before terminal event (truncated upstream) via %s: %v", upstreamTransport, a.ID, rerr)
+				log.Warnf("codex oauth: %s stream ended before terminal event (truncated upstream) via %s after %s (committed by %q): %v",
+					upstreamTransport, a.ID, time.Since(start).Round(time.Millisecond), res.committedBy, rerr)
 			}
 		}
 	default:
@@ -754,6 +755,18 @@ func codexTerminalEvent(payload []byte) bool {
 // so holding them back costs the client nothing — and it keeps the response
 // uncommitted long enough for a capacity shed to be withheld and failed over
 // instead of being forwarded as an error the user has to see.
+// codexEventType reads a Codex event payload's declared type, or "" when the
+// payload is not an object with one.
+func codexEventType(payload []byte) string {
+	var ev struct {
+		Type string `json:"type"`
+	}
+	if json.Unmarshal(payload, &ev) != nil {
+		return ""
+	}
+	return ev.Type
+}
+
 func codexPreambleEvent(payload []byte) bool {
 	var ev struct {
 		Type string `json:"type"`
@@ -868,6 +881,13 @@ type codexStreamResult struct {
 	// demoted: a shed that arrived after output had started, so it could only
 	// be demoted on the way out rather than withheld.
 	demoted shedSignal
+	// committedBy is the event type of the frame that first reached the client
+	// and so closed the withhold window. It exists because "which frame
+	// committed the response" decided, twice in one morning, whether a stalled
+	// turn could be rescued or only truncated — and both times it had to be
+	// inferred from a timestamp column, once wrongly. The transport keeps
+	// adding frames the HTTP path never had; this names them as they appear.
+	committedBy string
 	// firstOutputAt is when upstream produced its first content-bearing event —
 	// not the response headers, and not the response.created/in_progress
 	// preamble it opens with, which arrive immediately and say nothing about
@@ -926,6 +946,9 @@ func streamSSECodexBackend(c *gin.Context, resp *http.Response, counts *usage.Co
 	// to withhold, so an event line is held until its data line is classified
 	// and then emitted together with it.
 	var held []byte
+	// lastPayloadType is the type of the most recently classified data line,
+	// carried so the commit below can name the frame that closed the window.
+	lastPayloadType := ""
 	// preamble buffers the content-free events (response.created,
 	// response.in_progress, and the keepalives upstream sends while a turn
 	// waits for capacity) until the stream reveals what it is.
@@ -972,6 +995,7 @@ func streamSSECodexBackend(c *gin.Context, resp *http.Response, counts *usage.Co
 				case bytes.HasPrefix(trim, []byte("data:")):
 					payload := bytes.TrimSpace(trim[5:])
 					if len(payload) > 0 && payload[0] == '{' {
+						lastPayloadType = codexEventType(payload)
 						mergeCodexUsage(counts, extractCodexBackendUsageFromJSON(payload))
 
 						if codexerr.Classify(payload) == codexerr.ClassRetryable {
@@ -1089,6 +1113,7 @@ func streamSSECodexBackend(c *gin.Context, resp *http.Response, counts *usage.Co
 			if len(emit) > 0 {
 				if !sentAny {
 					out.firstOutputAt = time.Now()
+					out.committedBy = lastPayloadType
 				}
 				sentAny = true
 			}
