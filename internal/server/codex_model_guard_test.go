@@ -272,6 +272,23 @@ func TestTokenCountRoutingByCredential(t *testing.T) {
 		t.Error("an unoverridden Anthropic OAuth credential reaches api.anthropic.com, which implements count_tokens")
 	}
 
+	// The regression that cost a production round trip: ONE vendor-direct
+	// credential alongside resellers is not enough. The pool picks by health
+	// and load and will land on a reseller, which answers 404 — which is what
+	// happened, in 1.4s, on the first deploy of this file.
+	mixed := codexGuardServer(
+		&auth.Auth{ID: "oauth-anthropic", Kind: auth.KindOAuth, Provider: auth.ProviderAnthropic, AccessToken: "t"},
+		relay("relay-alongside", auth.ProviderAnthropic, "https://www.duckcoding.ai"),
+	)
+	if mixed.reachesVendorForTokenCount(auth.ProviderAnthropic) {
+		t.Error("a mixed pool was claimed vendor-reachable — the pool cannot be steered to the one credential that implements the route")
+	}
+
+	// An empty pool promises nothing.
+	if codexGuardServer().reachesVendorForTokenCount(auth.ProviderAnthropic) {
+		t.Error("an empty pool was claimed vendor-reachable")
+	}
+
 	// A base-URL override is a reseller, and no reseller implements the route.
 	s = codexGuardServer(relay("relay-anthropic", auth.ProviderAnthropic, "https://www.duckcoding.ai"))
 	if s.reachesVendorForTokenCount(auth.ProviderAnthropic) {

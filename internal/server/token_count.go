@@ -57,17 +57,28 @@ func (s *Server) handleCodexInputTokens(c *gin.Context) {
 	s.answerTokenCountLocally(c, auth.ProviderOpenAI)
 }
 
-// reachesVendorForTokenCount reports whether any enabled credential for this
+// reachesVendorForTokenCount reports whether EVERY enabled credential for this
 // provider talks to the vendor's own API, where these routes exist.
 //
-// Deliberately narrow. A credential with a base-URL override points at a
-// reseller, and no reseller in production implements either route; forwarding
-// to one produces the 404 this whole file exists to stop. The Codex OAuth
-// backend is excluded for a different reason: chatgpt.com/backend-api/codex is
-// not api.openai.com and has never been observed serving input_tokens, so
-// claiming it does would trade a working estimate for an unverified round trip.
+// Every, not any. The first version asked "any", and production answered 404 in
+// 1.4s: one enabled-but-idle OAuth credential made the check say "forward", and
+// the pool then picked by health and load — as it should — and landed on a
+// reseller. The pool cannot be told "only credentials that implement this
+// route", so the only claim this function can safely make is one that holds for
+// whichever credential is chosen.
+//
+// A credential with a base-URL override points at a reseller, and no reseller
+// in production implements either route. The Codex OAuth backend is excluded
+// for a different reason: chatgpt.com/backend-api/codex is not api.openai.com
+// and has never been observed serving input_tokens, so claiming it would trade
+// a working estimate for an unverified round trip.
+//
+// The cost of being conservative is an approximate answer where an exact one
+// was available. That is a much smaller error than the alternative this
+// replaced, which was no answer at all.
 func (s *Server) reachesVendorForTokenCount(provider string) bool {
 	want := auth.NormalizeProvider(provider)
+	found := false
 	for _, st := range s.pool.Status() {
 		if auth.NormalizeProvider(st.Auth.Provider) != want || st.Auth.Disabled {
 			continue
@@ -77,24 +88,22 @@ func (s *Server) reachesVendorForTokenCount(provider string) bool {
 			continue
 		}
 		base := strings.ToLower(strings.TrimRight(live.Snapshot().BaseURL, "/"))
+		vendor := false
 		switch want {
 		case auth.ProviderAnthropic:
 			// An OAuth credential with no override is api.anthropic.com, which
 			// implements count_tokens (cc-core already carries the beta header
 			// that route needs).
-			if st.Auth.Kind == auth.KindOAuth && base == "" {
-				return true
-			}
-			if base == "https://api.anthropic.com" {
-				return true
-			}
+			vendor = (st.Auth.Kind == auth.KindOAuth && base == "") || base == "https://api.anthropic.com"
 		default:
-			if st.Auth.Kind == auth.KindAPIKey && (base == "" || base == "https://api.openai.com") {
-				return true
-			}
+			vendor = st.Auth.Kind == auth.KindAPIKey && (base == "" || base == "https://api.openai.com")
 		}
+		if !vendor {
+			return false
+		}
+		found = true
 	}
-	return false
+	return found
 }
 
 func (s *Server) answerTokenCountLocally(c *gin.Context, provider string) {
