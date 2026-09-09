@@ -810,6 +810,28 @@ var codexContentFreeEvents = map[string]bool{
 	"response.content_part.added":           true,
 	"response.reasoning_summary_part.added": true,
 	"keepalive":                             true,
+
+	// The three the WebSocket transport adds, which the HTTP transport sends as
+	// response HEADERS and so never had to classify. cc-core's scrubber drops
+	// the metadata and timing frames whole, so those never committed anything;
+	// codex.rate_limits it rewrites and forwards, and forwarding is what
+	// commits.
+	//
+	// That one frame closed the withhold window on every WebSocket turn before
+	// response.created had even arrived. It is why the pre-output failover
+	// fired zero times across a whole night of them, and why ~18% of turns then
+	// ended as a visible truncation at the stall budget instead of moving to
+	// another credential in silence — the same ~16% the HTTP path had always
+	// rescued, because there the shed frame landed while the preamble was still
+	// being held.
+	//
+	// None of the three carries model output. codex.rate_limits reaches the
+	// client as a fixed throttled/not-throttled summary with the account's
+	// quota numbers already stripped, so holding it back costs nothing and
+	// replaying it after a failover costs nothing either.
+	"codex.rate_limits":             true,
+	"codex.response.metadata":       true,
+	"responsesapi.websocket_timing": true,
 }
 
 // codexPreOutputWithholdCap bounds how long the pre-output window may stay

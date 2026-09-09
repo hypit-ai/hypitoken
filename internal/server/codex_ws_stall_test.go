@@ -57,6 +57,12 @@ func TestStallBudgetDefaultsAndOptOut(t *testing.T) {
 // same frames as content-free.
 func TestPreambleClassifierIsTheStallPredicate(t *testing.T) {
 	contentFree := []string{
+		// The WebSocket-only frames first: these are what the HTTP transport
+		// sends as response headers, and misclassifying codex.rate_limits as
+		// content is what closed the withhold window on every WebSocket turn.
+		`{"type":"codex.rate_limits","plan_type":"plus","rate_limits":{"allowed":true}}`,
+		`{"type":"codex.response.metadata","headers":{"x-models-etag":"W/\"abc\""}}`,
+		`{"type":"responsesapi.websocket_timing","engine":"gpt56sol-codex-a-c321"}`,
 		`{"type":"response.created"}`,
 		`{"type":"response.in_progress"}`,
 		`{"type":"keepalive","sequence_number":7}`,
@@ -212,5 +218,79 @@ func TestParkedNonStreamingTurnFailsOver(t *testing.T) {
 	}
 	if elapsed < time.Second {
 		t.Fatalf("gave up after %s, before the 1s budget could expire — something other than the stall budget ended this turn", elapsed)
+	}
+}
+
+// rateLimitThenParkConn opens the way every real WebSocket turn does — with the
+// frames the HTTP transport sends as response headers — and then parks.
+type rateLimitThenParkConn struct {
+	mu       sync.Mutex
+	deadline time.Time
+	n        int
+}
+
+func (c *rateLimitThenParkConn) WriteJSON(any) error              { return nil }
+func (c *rateLimitThenParkConn) WriteMessage(int, []byte) error   { return nil }
+func (c *rateLimitThenParkConn) Ping(time.Time) error             { return nil }
+func (c *rateLimitThenParkConn) SetWriteDeadline(time.Time) error { return nil }
+func (c *rateLimitThenParkConn) Close() error                     { return nil }
+func (c *rateLimitThenParkConn) HandshakeResponse() *http.Response {
+	return &http.Response{StatusCode: http.StatusSwitchingProtocols}
+}
+
+func (c *rateLimitThenParkConn) SetReadDeadline(t time.Time) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.deadline = t
+	return nil
+}
+
+func (c *rateLimitThenParkConn) ReadMessage() (int, []byte, error) {
+	c.mu.Lock()
+	deadline := c.deadline
+	c.n++
+	n := c.n
+	c.mu.Unlock()
+
+	const beat = 40 * time.Millisecond
+	if !deadline.IsZero() && time.Until(deadline) < beat {
+		time.Sleep(time.Until(deadline))
+		return 0, nil, stallTimeoutErr{}
+	}
+	time.Sleep(beat)
+	switch n {
+	case 1:
+		return codexws.TextMessage, []byte(`{"type":"codex.rate_limits","plan_type":"plus","rate_limits":{"allowed":true,"limit_reached":false}}`), nil
+	case 2:
+		return codexws.TextMessage, []byte(`{"type":"codex.response.metadata","headers":{"x-models-etag":"W/\"abc\""}}`), nil
+	default:
+		return codexws.TextMessage, []byte(`{"type":"keepalive","sequence_number":1}`), nil
+	}
+}
+
+// TestRateLimitsFrameDoesNotForecloseFailover is the regression for the reason
+// the pre-output withhold fired zero times over the WebSocket. codex.rate_limits
+// is the transport's spelling of a response header, but cc-core rewrites and
+// forwards it rather than dropping it, and forwarding is what commits the
+// response. It arrived before response.created on every turn, so by the time
+// the backend parked, failover had already been foreclosed and the turn could
+// only end as a visible truncation — the same turns the HTTP path had always
+// rescued in silence.
+func TestRateLimitsFrameDoesNotForecloseFailover(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	conn := &rateLimitThenParkConn{}
+	cred := wsCred("ratelimit-then-park")
+	s := wsEgressServer(t, "https://unused.invalid", func(context.Context, codexws.DialConfig) (codexws.Conn, *http.Response, error) {
+		return conn, &http.Response{StatusCode: http.StatusSwitchingProtocols, Header: http.Header{}}, nil
+	}, cred)
+	s.codexWSEgress.cfg.StallTimeoutSeconds = 1
+
+	w, retry, done := runCodexTurn(t, s, cred, wsTurnBody())
+
+	if !retry || done {
+		t.Fatalf("retry=%v done=%v, want retry=true done=false — a turn that produced nothing but headers must still be failed over", retry, done)
+	}
+	if body := w.Body.String(); body != "" {
+		t.Fatalf("committed %q to the client before parking; the failover is no longer invisible", body)
 	}
 }
