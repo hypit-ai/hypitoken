@@ -13,6 +13,8 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/wjsoj/cc-core/usage"
+
+	"github.com/wjsoj/cc-core/auth"
 )
 
 func TestCodexTerminalEvent(t *testing.T) {
@@ -595,3 +597,62 @@ func TestFatalErrorFrameEndsTheStream(t *testing.T) {
 type blockingReader struct{}
 
 func (blockingReader) Read([]byte) (int, error) { select {} }
+
+// Once anything has gone out — a keepalive counts — an error must be reported
+// in band rather than as an HTTP status.
+//
+// The pre-output keepalive makes that routine: bytes go out to keep the
+// connection visibly alive while the forward loop is still hunting, so by the
+// time every credential is exhausted the 200 and the SSE content-type are long
+// since on the wire. Calling c.JSON there sends the caller nothing at all.
+func TestErrorOnAnAlreadyStartedStreamGoesInBand(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, tc := range []struct{ name, provider, wantType string }{
+		{"codex", auth.ProviderOpenAI, `"type":"error"`},
+		{"claude", auth.ProviderAnthropic, `"type":"error"`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(w)
+			c.Request = httptest.NewRequest("POST", "/v1/responses", nil)
+			// The stream has begun: a keepalive comment already went out.
+			c.Writer.WriteHeader(200)
+			_, _ = c.Writer.WriteString(":\n\n")
+
+			writeAPIError(c, tc.provider, APIError{
+				Status: 503, Code: "service_temporarily_unavailable", Message: "busy",
+			})
+
+			body := w.Body.String()
+			if !strings.Contains(body, "event: error") || !strings.Contains(body, tc.wantType) {
+				t.Fatalf("no in-band error frame reached the client: %q", body)
+			}
+			if !strings.Contains(body, "busy") {
+				t.Errorf("the reason did not survive: %q", body)
+			}
+			if w.Code != 200 {
+				t.Errorf("status = %d; it was already 200 and cannot change", w.Code)
+			}
+		})
+	}
+}
+
+// A stream that has NOT started still gets a real status — the in-band path
+// must not swallow the ordinary case.
+func TestErrorBeforeAnyByteStillSetsTheStatus(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("POST", "/v1/responses", nil)
+
+	writeAPIError(c, auth.ProviderOpenAI, APIError{
+		Status: 503, Code: "service_temporarily_unavailable", Message: "busy",
+	})
+
+	if w.Code != 503 {
+		t.Fatalf("status = %d, want 503", w.Code)
+	}
+	if strings.Contains(w.Body.String(), "event: error") {
+		t.Error("an untouched response was answered in band instead of with a status")
+	}
+}

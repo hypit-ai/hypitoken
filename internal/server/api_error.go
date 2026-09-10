@@ -29,6 +29,21 @@ func writeAPIError(c *gin.Context, provider string, e APIError) {
 	if e.Message == "" {
 		e.Message = "The request could not be completed. Please try again."
 	}
+	// A response that has already started cannot be given a status.
+	//
+	// The pre-output keepalive makes that a routine case rather than a bug:
+	// bytes go out to keep the connection visibly alive while the forward loop
+	// is still hunting for a credential, so by the time every credential is
+	// exhausted the 200 and the SSE content-type are long since on the wire.
+	// Calling c.JSON here would log "headers were already written" and send the
+	// caller nothing at all. Say it in band instead, in the shape the upstream
+	// itself uses for a mid-stream failure — which is the shape the client
+	// already knows how to read.
+	if c.Writer.Written() {
+		writeSSEErrorFrame(c, provider, e)
+		return
+	}
+
 	c.Header("Cache-Control", "no-store")
 	c.Header("X-Error-Code", e.Code)
 
@@ -132,4 +147,33 @@ func statusOr(status, fallback int) int {
 		return status
 	}
 	return fallback
+}
+
+// writeSSEErrorFrame reports an error on a stream that has already begun.
+//
+// The frame mirrors what each vendor sends for a mid-stream failure, so a
+// client that can read the upstream's own errors can read this one: Anthropic's
+// `event: error` with a typed body, and the Responses API's `type: "error"`
+// event. Both are followed by nothing — the stream simply ends — because there
+// is no terminal event to fabricate and inventing one would tell the client the
+// turn completed.
+func writeSSEErrorFrame(c *gin.Context, provider string, e APIError) {
+	var payload []byte
+	if auth.NormalizeProvider(provider) == auth.ProviderAnthropic {
+		payload, _ = json.Marshal(map[string]any{
+			"type":  "error",
+			"error": map[string]any{"type": e.Code, "message": e.Message},
+		})
+		_, _ = c.Writer.WriteString("event: error\n")
+	} else {
+		payload, _ = json.Marshal(map[string]any{
+			"type":  "error",
+			"error": map[string]any{"type": "server_error", "code": e.Code, "message": e.Message},
+		})
+		_, _ = c.Writer.WriteString("event: error\n")
+	}
+	_, _ = c.Writer.WriteString("data: " + string(payload) + "\n\n")
+	if f, ok := c.Writer.(http.Flusher); ok {
+		f.Flush()
+	}
 }

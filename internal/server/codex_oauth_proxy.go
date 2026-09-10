@@ -1481,7 +1481,16 @@ func streamSSECodexBackend(c *gin.Context, resp *http.Response, counts *usage.Co
 		Commit:           commit,
 		KeepaliveIdle:    10 * time.Second,
 		KeepalivePayload: []byte(":\n\n"),
-		Next:             next,
+		// Run it before the first byte too. The withhold window that keeps a
+		// failover available is silent by construction, and under an upstream
+		// capacity storm it is long: measured with the same body, credential and
+		// egress, a bare direct call is told `server_is_overloaded` 1.9 seconds
+		// in while the same turn through this loop leaves the socket silent for
+		// tens of seconds. Keepalive bytes do not set WroteAny, so the failover
+		// is untouched; what is given up is the HTTP status, and writeAPIError
+		// switches to an in-band error frame once anything has gone out.
+		PreOutputKeepalive: true,
+		Next:               next,
 	})
 	out.sawTerminal = r.SawTerminal
 	out.wroteAny = r.WroteAny
