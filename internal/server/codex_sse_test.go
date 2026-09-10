@@ -480,3 +480,49 @@ func TestUpstreamTTFBMillis(t *testing.T) {
 		t.Errorf("negative gap = %d, want 0", got)
 	}
 }
+
+// The other door into the same fault the preamble flush opened: a stream that
+// dies holding an unresolved `event:` line must not release it before anything
+// has been committed.
+//
+// `held` only ever carries an `event:` line waiting for its `data:`, so what
+// gets released is half an SSE event — malformed, empty of content, and enough
+// to commit the response and foreclose the failover. In the fifteen minutes
+// after the preamble fix shipped, 37 of 37 truncated production turns came
+// through here: all zero-output, three credentials, three clients, every one
+// logged as `committed by ""` because no data payload had been seen to name.
+func TestOrphanedEventLineDoesNotCommitTheResponse(t *testing.T) {
+	c, w := newCodexStreamCtx()
+	// An event line whose data never arrives, then EOF.
+	resp := &http.Response{Body: io.NopCloser(strings.NewReader("event: response.output_text.delta\n"))}
+
+	var counts usage.Counts
+	res := streamSSECodexBackend(c, resp, &counts, func() {})
+
+	if res.wroteAny || w.Body.Len() > 0 {
+		t.Fatalf("an orphaned event line committed the response: %q", w.Body.String())
+	}
+	if res.sawTerminal {
+		t.Error("no terminal event arrived; the turn must read as truncated")
+	}
+}
+
+// Once real content is on the wire the failover is gone anyway, so a trailing
+// unresolved event line is still passed on rather than silently dropped.
+func TestOrphanedEventLineIsStillReleasedMidStream(t *testing.T) {
+	c, w := newCodexStreamCtx()
+	body := "event: response.output_text.delta\n" +
+		`data: {"type":"response.output_text.delta","delta":"hi"}` + "\n\n" +
+		"event: response.output_text.delta\n"
+	resp := &http.Response{Body: io.NopCloser(strings.NewReader(body))}
+
+	var counts usage.Counts
+	res := streamSSECodexBackend(c, resp, &counts, func() {})
+
+	if !res.wroteAny {
+		t.Fatal("real content must still commit the response")
+	}
+	if got := strings.Count(w.Body.String(), "event: response.output_text.delta"); got != 2 {
+		t.Fatalf("trailing event line was dropped from a committed stream: %q", w.Body.String())
+	}
+}

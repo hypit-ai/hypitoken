@@ -1299,10 +1299,25 @@ func streamSSECodexBackend(c *gin.Context, resp *http.Response, counts *usage.Co
 				held = nil
 			case len(line) > 0:
 				emit = line
-			case rerr != nil && len(held) > 0 && !shedding:
-				// Stream ended with an unresolved event line — release it so
-				// nothing is silently dropped.
+			case rerr != nil && len(held) > 0 && !shedding && sentAny:
+				// Stream ended with an unresolved event line. `held` only ever
+				// carries an `event:` line waiting for its `data:`, so this is
+				// half an SSE event — malformed on its own, and worth passing on
+				// only to a client already mid-stream, where dropping bytes
+				// silently is the worse of two bad options.
+				//
+				// Before anything has been committed it is not passed on at
+				// all. Releasing it there was the same mistake the preamble
+				// flush made one door over: it committed the response, which
+				// foreclosed the failover, and what the client got was a bare
+				// `event:` line and a dead stream. 37 of 37 turns truncated in
+				// the fifteen minutes after that first fix landed came through
+				// HERE — all zero-output, across three credentials and three
+				// clients, every one logged as `committed by ""` because no
+				// data payload had ever been seen to name.
 				emit, held = held, nil
+			case rerr != nil && len(held) > 0 && !shedding:
+				held = nil
 			}
 
 			// Flush the buffered opener ahead of whatever released it, so the
