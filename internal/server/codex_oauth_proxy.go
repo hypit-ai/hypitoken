@@ -539,6 +539,18 @@ func (s *Server) doForwardCodexOAuth(c *gin.Context, a *auth.Auth, path string, 
 				logStatus = 499
 				a.MarkClientCancel("client canceled mid-stream")
 				log.Infof("codex oauth: client canceled mid-stream via %s", a.ID)
+			} else if res.fatalCode != "" {
+				// The stream ended because WE forwarded a fatal error frame —
+				// upstream rejecting the request, not upstream dying mid-turn.
+				// Calling that "truncated" put a client's own bad requests into
+				// the same bucket as a broken backend and inflated the metric
+				// the whole afternoon's work was being judged on: at the end of
+				// it, every remaining "truncation" was one client sending
+				// invalid_request_error six times out of six while the other 97
+				// turns in the window had none.
+				streamErr = "upstream rejected the request: " + res.fatalCode
+				log.Warnf("codex oauth: %s upstream rejected the request via %s after %s (code=%s): %v",
+					upstreamTransport, a.ID, time.Since(start).Round(time.Millisecond), res.fatalCode, rerr)
 			} else {
 				streamErr = "stream truncated before terminal event"
 				// The transport is named because it is the number this whole

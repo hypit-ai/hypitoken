@@ -526,3 +526,29 @@ func TestOrphanedEventLineIsStillReleasedMidStream(t *testing.T) {
 		t.Fatalf("trailing event line was dropped from a committed stream: %q", w.Body.String())
 	}
 }
+
+// A stream that ends because a fatal error frame was forwarded is upstream
+// REJECTING the request, not upstream dying mid-turn. Recording both as
+// "truncated" put clients' own bad requests in the same bucket as a broken
+// backend — and at the end of an afternoon spent chasing truncation, every
+// remaining one was a single client sending invalid_request_error six times
+// out of six while the other 97 turns in the window had none.
+func TestFatalErrorFrameIsNotRecordedAsATruncation(t *testing.T) {
+	c, w := newCodexStreamCtx()
+	body := "event: error\n" +
+		`data: {"type":"error","error":{"code":"invalid_request_error","message":"bad"}}` + "\n\n"
+	resp := &http.Response{Body: io.NopCloser(strings.NewReader(body))}
+
+	var counts usage.Counts
+	res := streamSSECodexBackend(c, resp, &counts, func() {})
+
+	if res.fatalCode != "invalid_request_error" {
+		t.Fatalf("fatal code not recorded: %q", res.fatalCode)
+	}
+	if res.shed != "" {
+		t.Errorf("a client-side rejection is not a capacity shed: %q", res.shed)
+	}
+	if !strings.Contains(w.Body.String(), "invalid_request_error") {
+		t.Errorf("the client must see the real reason, got %q", w.Body.String())
+	}
+}
