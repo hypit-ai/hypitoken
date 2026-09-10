@@ -529,7 +529,8 @@ func (s *Server) doForwardCodexOAuth(c *gin.Context, a *auth.Auth, path string, 
 			// all recorded Codex errors, drowning out the ~0.05% of genuine h2
 			// truncations. Match the transport-error branch above (and the
 			// Anthropic path) and name each for what it is.
-			if isClientDisconnect(ctx, rerr) {
+			switch {
+			case isClientDisconnect(ctx, rerr):
 				streamErr = "client canceled"
 				// 499 + MarkClientCancel match the pre-stream disconnect branch
 				// above, so a mid-stream hang-up lands in the same bucket as one
@@ -539,7 +540,7 @@ func (s *Server) doForwardCodexOAuth(c *gin.Context, a *auth.Auth, path string, 
 				logStatus = 499
 				a.MarkClientCancel("client canceled mid-stream")
 				log.Infof("codex oauth: client canceled mid-stream via %s", a.ID)
-			} else if res.fatalCode != "" {
+			case res.fatalCode != "":
 				// The stream ended because WE forwarded a fatal error frame —
 				// upstream rejecting the request, not upstream dying mid-turn.
 				// Calling that "truncated" put a client's own bad requests into
@@ -551,7 +552,7 @@ func (s *Server) doForwardCodexOAuth(c *gin.Context, a *auth.Auth, path string, 
 				streamErr = "upstream rejected the request: " + res.fatalCode
 				log.Warnf("codex oauth: %s upstream rejected the request via %s after %s (code=%s): %v",
 					upstreamTransport, a.ID, time.Since(start).Round(time.Millisecond), res.fatalCode, rerr)
-			} else {
+			default:
 				streamErr = "stream truncated before terminal event"
 				// The transport is named because it is the number this whole
 				// egress change is judged on: a WebSocket carries protocol-level
