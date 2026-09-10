@@ -518,3 +518,46 @@ func TestCommittedTurnIsNotCutByTheStallBudget(t *testing.T) {
 		t.Fatalf("the turn ended after %s — the stall budget was still armed past the commit, so a slow turn was cut into a truncated one for a failover that no longer existed", elapsed.Round(time.Millisecond))
 	}
 }
+
+// A committed turn the backend then parks must still end, and must end on the
+// WIDENED budget rather than the original one.
+//
+// Retiring the budget at commit was the wrong lesson from the truncation story.
+// ReadTimeout bounds the gap between FRAMES, not between content-bearing ones,
+// and a parked turn is not silent — the backend heartbeats `keepalive` about
+// every 30s, which resets that deadline forever. Production ran one such turn
+// for 669 seconds: first byte at 4.2s, nothing after it, the client gave up
+// before the proxy did, and users reported six-minute hangs.
+func TestCommittedThenParkedTurnStillEnds(t *testing.T) {
+	if got := (&config.CodexWSUpstreamConfig{}); got.CommittedStallTimeout() != 0 {
+		t.Fatal("an unnormalized config should report no bound until Normalize fills it")
+	}
+	up := config.CodexWSUpstreamConfig{Mode: config.CodexWSUpstreamAuto}
+	up.Normalize()
+
+	committed := up.CommittedStallTimeout()
+	if committed <= up.StallTimeout() {
+		t.Fatalf("committed budget %v must be wider than the pre-commit one %v — "+
+			"a narrower one just truncates slow turns again", committed, up.StallTimeout())
+	}
+	if committed == 0 || committed > 10*time.Minute {
+		t.Fatalf("committed budget %v is not a bound a waiting user would accept", committed)
+	}
+}
+
+// The relaxer must resolve against a real RelaxStall and stay a no-op for the
+// HTTP body, which has no budget. The first version of this hook read a wrapper
+// that hid the method and silently did nothing at all.
+func TestStallRelaxerResolvesOnlyAgainstAWebSocketStream(t *testing.T) {
+	var got time.Duration
+	fake := stallRelaxRecorder{fn: func(d time.Duration) { got = d }}
+	codexStallRelaxer(fake, 90*time.Second)()
+	if got != 90*time.Second {
+		t.Fatalf("relaxer passed %v, want 90s", got)
+	}
+	codexStallRelaxer(strings.NewReader("plain body"), 90*time.Second)()
+}
+
+type stallRelaxRecorder struct{ fn func(time.Duration) }
+
+func (s stallRelaxRecorder) RelaxStall(d time.Duration) { s.fn(d) }

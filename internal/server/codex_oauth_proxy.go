@@ -310,7 +310,7 @@ func (s *Server) doForwardCodexOAuth(c *gin.Context, a *auth.Auth, path string, 
 	// Captured here rather than inside the relay because the observer below
 	// wraps the body and hides the method — the first version of this fix read
 	// the wrapper and silently did nothing.
-	disarmStall := codexStallDisarmer(resp.Body)
+	relaxStall := codexStallRelaxer(resp.Body, s.cfg.CodexWS.Upstream.CommittedStallTimeout())
 	// Observe original bytes before protocol conversion or response scrubbing.
 	tierObserver := servicetier.ObserveBody(resp.Body)
 	resp.Body = tierObserver
@@ -381,9 +381,9 @@ func (s *Server) doForwardCodexOAuth(c *gin.Context, a *auth.Auth, path string, 
 		// client. They report the same codexStreamResult, so everything
 		// downstream is shared.
 		if isChat {
-			res = streamCodexAsChatCompletions(c, resp.Body, &counts, model, chatStreamWantsUsage(body), func() { disarmStall(); writeSSEResponseHeaders(c, resp) })
+			res = streamCodexAsChatCompletions(c, resp.Body, &counts, model, chatStreamWantsUsage(body), func() { relaxStall(); writeSSEResponseHeaders(c, resp) })
 		} else {
-			res = streamSSECodexBackend(c, resp, &counts, func() { disarmStall(); writeSSEResponseHeaders(c, resp) })
+			res = streamSSECodexBackend(c, resp, &counts, func() { relaxStall(); writeSSEResponseHeaders(c, resp) })
 		}
 		// A turn the backend parked and never scheduled is a capacity refusal
 		// that happens to be shaped like silence: over the WebSocket it arrives
@@ -1090,14 +1090,23 @@ type codexStreamResult struct {
 //
 // gin's ResponseWriter is not goroutine-safe, so the keepalive goroutine and the
 // read loop share one mutex around every Write/Flush.
-// codexStallDisarmer retires the WebSocket stall budget once a relay has
-// committed the response.
+// codexStallRelaxer widens the WebSocket stall budget once a relay has
+// committed the response. The HTTP transport has no such budget and returns a
+// no-op.
 //
-// The budget exists to convert a turn the backend parked into a failover, and
-// the failover is gone the moment the first byte reaches the client. Left armed
-// it can only cut a slow turn into a truncated one — the single largest source
-// of truncated Codex streams the day the budget shipped. The HTTP transport has
-// no such budget and returns a no-op.
+// Not retires — widens. The budget exists to convert a turn the backend parked
+// into a failover, and the failover is gone the moment the first byte reaches
+// the client, so leaving the ORIGINAL budget armed can only cut a slow turn
+// into a truncated one: the single largest source of truncated Codex streams
+// the day the budget shipped.
+//
+// Retiring it outright was the wrong lesson, and cost a second afternoon.
+// ReadTimeout bounds the gap between frames, not between content-bearing ones,
+// and a parked turn is not silent — the backend heartbeats `keepalive` about
+// every 30s, which resets that deadline forever. A committed turn the backend
+// then parked therefore had no bound at all: production ran one for 669
+// seconds, first byte at 4.2s and nothing after it, and users reported requests
+// hanging six minutes with no answer.
 // codexErrorFrameCode reads the vendor error code out of an error frame, in
 // both the shapes the Codex backend uses. It exists for the log line below:
 // an error frame the classifier calls fatal is forwarded verbatim, which
@@ -1144,9 +1153,9 @@ func codexFatalCodeSuffix(code string) string {
 	return " code=" + code
 }
 
-func codexStallDisarmer(r any) func() {
-	if d, ok := r.(interface{ DisarmStall() }); ok {
-		return d.DisarmStall
+func codexStallRelaxer(r any, d time.Duration) func() {
+	if v, ok := r.(interface{ RelaxStall(time.Duration) }); ok {
+		return func() { v.RelaxStall(d) }
 	}
 	return func() {}
 }

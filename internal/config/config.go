@@ -322,6 +322,19 @@ type CodexWSUpstreamConfig struct {
 	// 0 disables it and restores the hang; do that only to reproduce one.
 	StallTimeoutSeconds int `yaml:"stall_timeout_seconds,omitempty"`
 
+	// CommittedStallTimeoutSeconds bounds the gap between content-bearing
+	// frames AFTER the response has been committed. 0 => 240; negative
+	// disables the bound entirely.
+	//
+	// It has to be its own number. Before the commit the budget buys a
+	// failover, so it is short. After the commit there is no failover left and
+	// firing merely truncates a slow turn — but removing the bound altogether
+	// leaves nothing at all, because ReadTimeout measures the gap between
+	// FRAMES and the backend heartbeats `keepalive` about every 30s through a
+	// park. Production ran a committed-then-parked turn for 669 seconds that
+	// way, first byte at 4.2s and nothing after it.
+	CommittedStallTimeoutSeconds int `yaml:"committed_stall_timeout_seconds,omitempty"`
+
 	// AuthIDs restricts the WebSocket egress to these credential ids. Empty
 	// (the default) means every eligible credential.
 	//
@@ -383,6 +396,9 @@ func (u *CodexWSUpstreamConfig) Normalize() {
 	if u.StallTimeoutSeconds == 0 {
 		u.StallTimeoutSeconds = 120
 	}
+	if u.CommittedStallTimeoutSeconds == 0 {
+		u.CommittedStallTimeoutSeconds = 240
+	}
 	if u.FallbackCooldownSeconds <= 0 {
 		u.FallbackCooldownSeconds = 600
 	}
@@ -432,6 +448,15 @@ func (u CodexWSUpstreamConfig) ReadTimeout() time.Duration {
 // StallTimeout is the normalized content-idle budget. A negative configured
 // value disables it — Normalize only fills the zero, so that "off" stays
 // expressible after defaulting.
+// CommittedStallTimeout is the content-idle budget that replaces StallTimeout
+// once the response is committed. A negative configured value means no bound.
+func (u CodexWSUpstreamConfig) CommittedStallTimeout() time.Duration {
+	if u.CommittedStallTimeoutSeconds < 0 {
+		return 0
+	}
+	return time.Duration(u.CommittedStallTimeoutSeconds) * time.Second
+}
+
 func (u CodexWSUpstreamConfig) StallTimeout() time.Duration {
 	if u.StallTimeoutSeconds < 0 {
 		return 0

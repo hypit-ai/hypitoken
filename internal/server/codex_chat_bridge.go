@@ -49,7 +49,11 @@ import (
 func streamCodexAsChatCompletions(c *gin.Context, upstream io.Reader, counts *usage.Counts, model string, includeUsage bool, commit func()) codexStreamResult {
 	flusher, _ := c.Writer.(http.Flusher)
 	reader := newLineReader(upstream)
-	disarmStall := codexStallDisarmer(upstream)
+	// chat/completions never rides the WebSocket egress (see eligible()), so
+	// this resolves to a no-op today. Kept correct rather than deleted: the
+	// relay is shared, and a no-op that silently stops matching the native path
+	// is how the first DisarmStall wiring shipped doing nothing at all.
+	relaxStall := codexStallRelaxer(upstream, codexDefaultCommittedStall)
 	st := apicompat.NewStreamState(model, includeUsage, time.Now().Unix())
 	var out codexStreamResult
 
@@ -74,7 +78,7 @@ func streamCodexAsChatCompletions(c *gin.Context, upstream io.Reader, counts *us
 					out.firstOutputAt = time.Now()
 					// Same reason as the native relay: the failover the stall
 					// budget protects ends at the first committed byte.
-					disarmStall()
+					relaxStall()
 				}
 				sentAny = true
 				return frame, apicompat.IsDoneFrame(frame), nil
