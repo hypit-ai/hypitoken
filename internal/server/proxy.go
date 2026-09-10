@@ -239,7 +239,24 @@ func (s *Server) forward(c *gin.Context, provider, path string) {
 // withheld upstream error is replayed verbatim (e.g. a 429 + Retry-After)
 // instead of a synthetic 503, so clients back off correctly.
 func (s *Server) forwardWithFailover(c *gin.Context, provider, path, model, clientToken, clientGroup, clientName, slotID string, body []byte, stream bool, start time.Time) {
-	const maxAttempts = 12
+	// How many credentials one request may burn.
+	//
+	// Twelve for Anthropic, where a credential-level failure is usually a 429
+	// or a 401 and the next credential genuinely is a fresh roll of the dice.
+	//
+	// Four for Codex, because production says the roll is not fresh at all.
+	// Measured across an hour of an upstream capacity storm: requests served by
+	// the FIRST credential produced output 32.4% of the time (58/179), and
+	// requests that had been shed and rotated produced output 4.2% of the time
+	// (20/472). Rotation is not rescuing these turns — something about the turn
+	// itself is being refused everywhere — so the eight extra rounds buy almost
+	// nothing and cost the caller the better part of two minutes. A client that
+	// gets its answer quickly and asks again starts a fresh turn with the 32%
+	// odds, which is eight times better than the rotation it replaces.
+	maxAttempts := 12
+	if auth.NormalizeProvider(provider) == auth.ProviderOpenAI {
+		maxAttempts = 4
+	}
 	// A retry only helps while someone is still waiting for the answer.
 	// maxAttempts alone assumed attempts were cheap, which held while a
 	// credential-level failure was an immediate 429 or 401. It stopped holding

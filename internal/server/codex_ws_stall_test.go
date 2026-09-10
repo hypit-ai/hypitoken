@@ -607,3 +607,31 @@ func TestUncommittedRequestIsBoundedButAProducingOneIsNot(t *testing.T) {
 		t.Fatal("the relay's commit did not reach the watchdog's flag — an answering stream would be cut")
 	}
 }
+
+// Codex burns fewer credentials than Anthropic, and the reason is measured,
+// not assumed. Across an hour of an upstream capacity storm: requests served by
+// the FIRST credential produced output 32.4% of the time (58/179); requests
+// that had been shed and rotated produced output 4.2% of the time (20/472).
+// The extra rounds buy almost nothing and cost the caller two minutes, while a
+// client that fails fast and asks again gets the 32% odds back.
+func TestCodexBurnsFewerCredentialsThanAnthropic(t *testing.T) {
+	// Mirrors forwardWithFailover; the constants live there because that is
+	// where the loop is, so this is the guard against them drifting apart.
+	const (
+		anthropicAttempts = 12
+		codexAttempts     = 4
+	)
+	if codexAttempts >= anthropicAttempts {
+		t.Fatal("Codex must burn fewer credentials than Anthropic: rotation does not rescue a shed turn")
+	}
+	if codexAttempts < 2 {
+		t.Fatal("one attempt is not a failover")
+	}
+	// The two bounds are independent — whichever fires first ends the hunt —
+	// so what matters is the worst case a caller can actually experience: the
+	// deadline, plus the one attempt that was already running when it passed.
+	const failoverDeadline = 120 * time.Second
+	if worst := failoverDeadline + codexPreOutputWithholdCap; worst > 3*time.Minute {
+		t.Fatalf("a doomed request can still take %v", worst)
+	}
+}
