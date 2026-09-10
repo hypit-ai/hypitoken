@@ -284,3 +284,70 @@ func TestCodexHTTPSessionIDFallsBackToSlot(t *testing.T) {
 		t.Errorf("different slots shared session-id %q", seen[2])
 	}
 }
+
+// The client's own headers must not ride along to chatgpt.com.
+//
+// Every other forward path copies them, because it is proxying to something
+// that expects a proxy. This one is pretending to be a desktop application
+// talking to its vendor, and every capture of that application shows six to
+// eight headers on the wire. Copying meant whatever the downstream client sent
+// arrived on top of the ten we carefully match — one chatty SDK was enough to
+// make this deployment's requests a shape nothing else produces.
+func TestClientHeadersDoNotReachChatGPT(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	var got http.Header
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Clone()
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("event: response.completed\n" +
+			`data: {"type":"response.completed","usage":{"input_tokens":1,"output_tokens":1}}` + "\n\n"))
+	}))
+	t.Cleanup(up.Close)
+
+	cred := &auth.Auth{
+		ID: "codex-hdr.json", Kind: auth.KindOAuth, Provider: auth.ProviderOpenAI,
+		AccessToken: "tok", ExpiresAt: time.Now().Add(time.Hour),
+	}
+	s := codexHTTPTestServer(up.URL, cred)
+
+	body := []byte(`{"model":"gpt-5.6-sol","stream":true,"prompt_cache_key":"conv",` +
+		`"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}]}`)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(string(body)))
+	// The shape a real third-party caller produces: an SDK's telemetry block,
+	// an org header, browser hints, and something entirely of its own.
+	for k, v := range map[string]string{
+		"X-Stainless-Lang":    "js",
+		"X-Stainless-Runtime": "node",
+		"Openai-Organization": "org-abc",
+		"Accept-Language":     "zh-CN,zh;q=0.9",
+		"Sec-Ch-Ua":           `"Chromium";v="131"`,
+		"X-Totally-Custom":    "1",
+		"Openai-Beta":         "assistants=v2",
+	} {
+		c.Request.Header.Set(k, v)
+	}
+	c.Set("client_token", "tok-1")
+	c.Set("client_name", "tester")
+
+	s.doForwardCodexOAuth(c, cred, "/v1/responses", body, true, "gpt-5.6-sol", "tok-1", "tester", "slot", time.Now(), 1)
+
+	if got == nil {
+		t.Fatal("upstream never received the request")
+	}
+	for _, leaked := range []string{
+		"X-Stainless-Lang", "X-Stainless-Runtime", "Openai-Organization",
+		"Accept-Language", "Sec-Ch-Ua", "X-Totally-Custom", "Openai-Beta",
+	} {
+		if v := got.Get(leaked); v != "" {
+			t.Errorf("client header %s=%q reached chatgpt.com", leaked, v)
+		}
+	}
+	// And the identity we DO owe upstream is still there — this test must fail
+	// if the fix were "send nothing".
+	for _, required := range []string{"Authorization", "User-Agent", "Originator", "Version"} {
+		if got.Get(required) == "" {
+			t.Errorf("%s went missing from the upstream request", required)
+		}
+	}
+}

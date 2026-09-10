@@ -126,8 +126,20 @@ func (s *Server) doForwardCodexOAuth(c *gin.Context, a *auth.Auth, path string, 
 		writeAPIError(c, auth.ProviderOpenAI, APIError{Status: http.StatusInternalServerError, Code: "request_preparation_failed", Message: "The request could not be prepared. Please try again."})
 		return false, true
 	}
-	copyForwardableHeaders(c.Request.Header, upReq.Header)
-	stripIngressHeaders(upReq.Header)
+	// The client's own headers are deliberately NOT copied onto this request.
+	//
+	// Every other forward path copies them, because it is proxying to something
+	// that expects a proxy. This one is pretending to be a desktop application
+	// talking to its vendor, and every capture of that application shows six to
+	// eight headers on the wire (crack/codexapp0.153.4/rows/12,
+	// crack/codexv0.153.4/rows/30). Copying meant whatever the downstream
+	// client happened to send rode along on top of the ten we carefully match:
+	// x-stainless-*, openai-organization, accept-language, sec-ch-ua, any
+	// custom header at all. One curl user with a chatty SDK was enough to make
+	// this deployment's requests a shape nothing else in the world produces.
+	//
+	// applyCodexHeaders below sets the complete captured set, so there is
+	// nothing here the upstream needs and nothing to strip.
 
 	accessToken, _ := a.Credentials()
 	accountID, _ := a.CodexIdentity()
