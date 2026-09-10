@@ -311,9 +311,23 @@ func TestStreamSSECodexBackendReleasesPreambleOnContent(t *testing.T) {
 	}
 }
 
-// A stream that ends after nothing but openers must still release them rather
-// than handing the client an empty body.
-func TestStreamSSECodexBackendReleasesPreambleOnEOF(t *testing.T) {
+// A stream that ends with nothing but content-free frames buffered must leave
+// the response UNCOMMITTED, so the forward loop can fetch a real answer from
+// another credential.
+//
+// This reverses an earlier rule ("the buffered opener must not be swallowed on
+// EOF"). Releasing it looked like the conservative choice and was the opposite:
+// the opener committed the response, which foreclosed failover, and what
+// reached the client was a `response.created` followed by a dead stream. In
+// production that WAS the complaint — one 25-minute window put 101 of 373
+// gpt-5.6-sol turns in this state, upstream closing the socket with
+// `close 1000 (normal)` and no terminal event, while eight healthy accounts sat
+// in the pool and were never asked.
+//
+// Nothing is lost by dropping it: a turn that genuinely finished emits
+// response.completed, which is not content-free, so a complete response always
+// has real content to flush the buffer ahead of.
+func TestStreamSSECodexBackendWithholdsAPreambleOnlyTruncation(t *testing.T) {
 	c, w := newCodexStreamCtx()
 	body := "event: response.created\n" +
 		`data: {"type":"response.created","response":{"id":"resp_1"}}` + "\n\n"
@@ -325,8 +339,8 @@ func TestStreamSSECodexBackendReleasesPreambleOnEOF(t *testing.T) {
 	if res.shed != "" {
 		t.Errorf("a plain truncation is not a shed; got %q", res.shed)
 	}
-	if !strings.Contains(w.Body.String(), "response.created") {
-		t.Errorf("the buffered opener must not be swallowed on EOF, got %q", w.Body.String())
+	if res.wroteAny || w.Body.Len() > 0 {
+		t.Errorf("a preamble-only truncation committed the response, foreclosing failover: %q", w.Body.String())
 	}
 }
 

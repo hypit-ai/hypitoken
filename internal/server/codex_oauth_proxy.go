@@ -1261,10 +1261,23 @@ func streamSSECodexBackend(c *gin.Context, resp *http.Response, counts *usage.Co
 			}
 
 			// Flush the buffered opener ahead of whatever released it, so the
-			// client still receives the stream in upstream's original order. On
-			// a clean EOF with nothing but a preamble, release it too rather
-			// than swallowing the whole response.
-			if len(preamble) > 0 && !shedding && (len(emit) > 0 || rerr != nil) {
+			// client still receives the stream in upstream's original order.
+			//
+			// Only ever ahead of real content. A stream that ends with NOTHING
+			// but content-free frames buffered has produced nothing a caller
+			// can use, and releasing the buffer on the way out was the worst of
+			// both worlds: the preamble committed the response, which foreclosed
+			// the failover that would have fetched a real answer, and what the
+			// client got was an opener followed by a dead stream. That is the
+			// shape of "the connection keeps dropping" — 101 of one 25-minute
+			// window's 373 gpt-5.6-sol turns, every one of them upstream closing
+			// the socket with `close 1000 (normal)` and no terminal event, while
+			// the pool still held eight healthy accounts that were never asked.
+			//
+			// Dropping it instead costs nothing: a turn that really finished
+			// emits response.completed, which is not content-free, so a complete
+			// response always has something in `emit` here.
+			if len(preamble) > 0 && !shedding && len(emit) > 0 {
 				emit = append(append(make([]byte, 0, len(preamble)+len(emit)), preamble...), emit...)
 				preamble = nil
 			}
