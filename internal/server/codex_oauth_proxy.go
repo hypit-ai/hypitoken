@@ -1167,6 +1167,10 @@ func streamSSECodexBackend(c *gin.Context, resp *http.Response, counts *usage.Co
 	// Start of the withhold window — see codexPreOutputWithholdCap.
 	withholdStart := time.Now()
 
+	// fatalFrame latches when an error frame the classifier calls fatal has been
+	// forwarded. The turn ends with it: see the branch that sets it.
+	fatalFrame := false
+
 	// shedding latches once a capacity/quota error frame is seen before any
 	// output has reached the client. From that point the rest of the stream is
 	// withheld — including the response.failed that follows — so Relay ends with
@@ -1279,8 +1283,25 @@ func streamSSECodexBackend(c *gin.Context, resp *http.Response, counts *usage.Co
 						// account fault — the pattern behind the 1006 closures
 						// that follow these frames — can be told apart from a
 						// genuine rejection instead of being counted as one.
-						if !sentAny && codexerr.Classify(payload) == codexerr.ClassFatal {
-							out.fatalCode = codexErrorFrameCode(payload)
+						if codexerr.Classify(payload) == codexerr.ClassFatal {
+							if !sentAny {
+								out.fatalCode = codexErrorFrameCode(payload)
+							}
+							// This turn is over. ClassFatal means retrying
+							// elsewhere would fail identically, so the frame is
+							// forwarded verbatim — but forwarding it and then
+							// going back to the read loop left the stream OPEN,
+							// with nothing further ever coming, until
+							// ReadTimeout expired ten minutes later.
+							//
+							// The client had its answer in two seconds and sat
+							// spinning for the rest. Measured end to end against
+							// production: the error arrived at 2s and the
+							// connection was still open when curl gave up at 60s.
+							// It is what users reported as "ten minutes and no
+							// result", and the committed stall budget only ever
+							// capped it at four.
+							fatalFrame = true
 						}
 
 						if codexTerminalEvent(payload) && !shedding {
@@ -1403,6 +1424,13 @@ func streamSSECodexBackend(c *gin.Context, resp *http.Response, counts *usage.Co
 					}
 				}
 				sentAny = true
+			}
+			if fatalFrame && rerr == nil {
+				// Emit the frame, then end. io.EOF rather than a synthetic
+				// error so every caller treats it as an ordinary stream end;
+				// the request log still names the rejection, because
+				// out.fatalCode is set and sawTerminal is not.
+				return emit, terminal, io.EOF
 			}
 			if len(emit) > 0 || rerr != nil {
 				return emit, terminal, rerr

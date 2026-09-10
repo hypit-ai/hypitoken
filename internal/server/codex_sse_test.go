@@ -552,3 +552,46 @@ func TestFatalErrorFrameIsNotRecordedAsATruncation(t *testing.T) {
 		t.Errorf("the client must see the real reason, got %q", w.Body.String())
 	}
 }
+
+// An error frame the classifier calls fatal ends the turn. Forwarding it and
+// then returning to the read loop left the stream OPEN with nothing further
+// ever coming, until ReadTimeout expired — ten minutes on the production
+// setting.
+//
+// Measured end to end against production: the frame
+// ("X-OpenAI-Internal-Codex-Responses-Lite requires reasoning.context to be
+// all_turns", status 400) arrived at 2s and the connection was still open when
+// curl gave up at 60s. Users reported it as "ten minutes and no result"; the
+// committed stall budget only ever capped it at four.
+func TestFatalErrorFrameEndsTheStream(t *testing.T) {
+	c, w := newCodexStreamCtx()
+	// The error, then a reader that would block forever if anyone kept reading.
+	body := io.MultiReader(
+		strings.NewReader("event: error\n"+
+			`data: {"type":"error","error":{"code":"unsupported_value","message":"bad"},"status":400}`+"\n\n"),
+		blockingReader{},
+	)
+	resp := &http.Response{Body: io.NopCloser(body)}
+
+	done := make(chan codexStreamResult, 1)
+	var counts usage.Counts
+	go func() { done <- streamSSECodexBackend(c, resp, &counts, func() {}) }()
+
+	select {
+	case res := <-done:
+		if res.fatalCode != "unsupported_value" {
+			t.Errorf("fatal code = %q, want unsupported_value", res.fatalCode)
+		}
+		if !strings.Contains(w.Body.String(), "unsupported_value") {
+			t.Errorf("the client must still receive the real reason, got %q", w.Body.String())
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("the relay kept reading after a fatal error frame — this is the ten-minute hang")
+	}
+}
+
+// blockingReader never returns, standing in for an upstream that sends nothing
+// more and never closes.
+type blockingReader struct{}
+
+func (blockingReader) Read([]byte) (int, error) { select {} }
