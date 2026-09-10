@@ -963,6 +963,17 @@ const codexShedPreviewBytes = 600
 // eligible for one more round instead of excluding it.
 const codexStaleSocketRetryKey = "codex_stale_socket_retry"
 
+// codexCommitPreview keeps both ends of the committing write. The head says
+// what was buffered, the TAIL says what released it — and the tail is the half
+// that names the bug, which a plain head-truncation hides.
+func codexCommitPreview(emit []byte) string {
+	const half = 200
+	if len(emit) <= 2*half {
+		return string(emit)
+	}
+	return string(emit[:half]) + "…<cut>…" + string(emit[len(emit)-half:])
+}
+
 // codexCommittedLineSuffix names the bytes that committed a response when the
 // committing frame declared no event type, so an empty `committed by ""` can be
 // told apart from the other things that produce the same empty string.
@@ -1366,7 +1377,7 @@ func streamSSECodexBackend(c *gin.Context, resp *http.Response, counts *usage.Co
 					out.firstOutputAt = time.Now()
 					out.committedBy = lastPayloadType
 					if lastPayloadType == "" {
-						out.committedLine = truncate(emit, 120)
+						out.committedLine = codexCommitPreview(emit)
 					}
 				}
 				sentAny = true
