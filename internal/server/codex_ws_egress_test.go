@@ -624,3 +624,58 @@ func TestFreshSocketBreakStillRotatesCredential(t *testing.T) {
 		t.Fatal("a fresh socket's break was excused as a stale pooled one")
 	}
 }
+
+// A capacity refusal must ask the SAME credential again before the loop
+// rotates. It is a verdict on how expensive the turn is to schedule, not on the
+// account — and the account that just refused it is the only one in the pool
+// holding this conversation's prompt cache, so its retry is the cheap one.
+//
+// Quota and rate refusals ARE about the account, so they must keep rotating.
+func TestCapacityShedAsksTheSameCredentialAgain(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, tc := range []struct {
+		name, code string
+		wantSame   bool
+	}{
+		{"server_is_overloaded", "server_is_overloaded", true},
+		{"slow_down", "slow_down", true},
+		// Rate is retryable-but-account-scoped: it rolls back AND rotates.
+		{"rate_limit_exceeded", "rate_limit_exceeded", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			conn := &egressConn{frames: []string{
+				`{"type":"response.created","response":{"id":"resp_1"}}`,
+				`{"type":"error","error":{"code":"` + tc.code + `","message":"nope"}}`,
+				`{"type":"response.failed","response":{"status":"failed"}}`,
+			}}
+			cred := wsCred("ws-shed-" + tc.code)
+			s := wsEgressServer(t, "https://unused.invalid", func(context.Context, codexws.DialConfig) (codexws.Conn, *http.Response, error) {
+				return conn, &http.Response{StatusCode: http.StatusSwitchingProtocols, Header: http.Header{}}, nil
+			}, cred)
+
+			c, retry, done := runCodexTurnCtx(t, s, cred, wsTurnBody())
+			if !retry || done {
+				t.Fatalf("shed did not roll back: retry=%v done=%v", retry, done)
+			}
+			if got := c.GetBool(codexCapacityShedKey); got != tc.wantSame {
+				t.Fatalf("same-credential retry requested = %v, want %v for code %q", got, tc.wantSame, tc.code)
+			}
+		})
+	}
+}
+
+// The same-credential budget has to be finite: a credential with genuinely no
+// room must yield to the rest of the pool rather than absorb the whole request.
+func TestSameCredentialShedRetriesAreBounded(t *testing.T) {
+	if codexSameCredShedRetries < 1 || codexSameCredShedRetries > 3 {
+		t.Fatalf("codexSameCredShedRetries = %d; a budget outside 1..3 either "+
+			"defeats the point or spends the caller's whole latency budget on one account",
+			codexSameCredShedRetries)
+	}
+	// The forward loop's backstop is 12 rounds (proxy.go). Leave most of them
+	// for the pool.
+	if codexSameCredShedRetries > 3 {
+		t.Fatalf("a single credential may consume %d of the loop's 12 failover rounds",
+			codexSameCredShedRetries)
+	}
+}

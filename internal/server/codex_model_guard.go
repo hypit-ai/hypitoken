@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"math/rand/v2"
 	"sort"
 	"strings"
 	"sync"
@@ -391,4 +392,33 @@ func levenshtein(a, b string) int {
 		prev, cur = cur, prev
 	}
 	return prev[len(b)]
+}
+
+// codexSameCredShedRetries bounds how many times one credential may be asked
+// again after refusing a turn for capacity, before the loop rotates away from
+// it as it always did.
+//
+// Two, not more. The upside of staying put is a warm prompt cache; the downside
+// is spending the request's latency budget on an account that really has no
+// room. Two rounds is enough to ride out the seconds-long refusals production
+// shows while still leaving ten of the twelve failover rounds for the pool.
+const codexSameCredShedRetries = 2
+
+// codexShedRetryBackoff spaces a same-credential retry. Short — the shed itself
+// already cost seconds — but jittered, so a burst of turns refused in the same
+// instant does not come back at the backend as one synchronized wave.
+func codexShedRetryBackoff() time.Duration {
+	return 300*time.Millisecond + time.Duration(rand.Int64N(int64(500*time.Millisecond))) //nolint:gosec // G404: scheduling jitter, not a secret.
+}
+
+// sleepCtx waits for d, reporting false if the context ended first.
+func sleepCtx(ctx context.Context, d time.Duration) bool {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-t.C:
+		return true
+	}
 }

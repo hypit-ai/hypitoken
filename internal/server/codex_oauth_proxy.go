@@ -434,8 +434,33 @@ func (s *Server) doForwardCodexOAuth(c *gin.Context, a *auth.Auth, path string, 
 				// removing them, so a window where the model is at capacity
 				// everywhere still routes instead of reporting an empty pool.
 				a.MarkModelShed(model, time.Now())
-				log.Warnf("codex oauth: %s shed the request before any output over %s (attempt %d, %s): %s — retrying on another credential",
-					a.ID, upstreamTransport, attempts, time.Since(start).Round(time.Millisecond), res.shed)
+				// A capacity refusal is not a verdict on the credential — it is
+				// a verdict on how expensive THIS turn is to schedule, and the
+				// credential that just refused it is the only one in the pool
+				// holding this conversation's prompt cache. Rotating therefore
+				// re-rolls the same dice with a strictly worse hand: the next
+				// account has to prefill from scratch, which is the very thing
+				// upstream just declined to do.
+				//
+				// Production says the shed is a property of the request, not of
+				// the moment or the account. Over one 104-minute storm 70.4% of
+				// turns succeeded on the FIRST credential while a minority were
+				// refused again and again — nothing like the 36% a memoryless
+				// per-attempt coin flip would give at the same 64% refusal rate
+				// — and the per-minute spread of multi-attempt turns was only
+				// 1.53x over-dispersed, so "bad moment" does not explain it
+				// either. Turns that sailed through carried 10k tokens of
+				// uncached prefill at 88% cache hit; turns that burned five or
+				// more credentials carried 43k at 33%.
+				//
+				// So: ask the same credential again before giving up on it. The
+				// forward loop bounds this (codexSameCredShedRetries) and then
+				// rotates exactly as before.
+				if codexCapacityShedCodes[res.shedCode] {
+					c.Set(codexCapacityShedKey, true)
+				}
+				log.Warnf("codex oauth: %s shed the request before any output over %s (attempt %d, %s, code=%q): %s — retrying",
+					a.ID, upstreamTransport, attempts, time.Since(start).Round(time.Millisecond), res.shedCode, res.shed)
 				// Record the shed as a credential-attempt row. It is withheld
 				// from the client by design, and until now it was withheld from
 				// the archive too: 3315 of these in one 16-hour production
@@ -936,6 +961,20 @@ const codexShedPreviewBytes = 600
 // eligible for one more round instead of excluding it.
 const codexStaleSocketRetryKey = "codex_stale_socket_retry"
 
+// codexCapacityShedKey marks an attempt withheld because upstream refused the
+// turn for capacity. The forward loop reads it to retry the SAME credential a
+// bounded number of times before rotating; see the shed branch for why.
+const codexCapacityShedKey = "codex_capacity_shed"
+
+// codexCapacityShedCodes are the refusals that say "not right now" about the
+// turn rather than anything about the account. Quota and rate codes are
+// deliberately absent: those ARE about the account, and rotating is the right
+// answer for them.
+var codexCapacityShedCodes = map[string]bool{
+	"server_is_overloaded": true,
+	"slow_down":            true,
+}
+
 // codexStreamResult reports the outcome of a Codex backend SSE relay so the
 // caller can choose between a transparent retry (nothing reached the client
 // yet) and a logged give-up (bytes already committed downstream — from that
@@ -962,6 +1001,11 @@ type codexStreamResult struct {
 	// response. Recorded so a code that is really a transient account fault can
 	// be told apart from a genuine rejection without another day of guessing.
 	fatalCode string
+	// shedCode is the vendor error code of the withheld shed frame. It decides
+	// whether the retry rotates credentials or stays put: a capacity refusal is
+	// about how expensive this turn is to schedule, and the credential that
+	// just refused it is the only one holding its prompt cache.
+	shedCode string
 	// upstreamModel is what the terminal event said the provider actually ran.
 	// It is not always what was asked for: a provider under load can serve
 	// something lighter and say so only here.
@@ -1149,6 +1193,7 @@ func streamSSECodexBackend(c *gin.Context, resp *http.Response, counts *usage.Co
 								// commits the response.
 								shedding = true
 								out.shed = truncate(payload, codexShedPreviewBytes)
+								out.shedCode = codexErrorFrameCode(payload)
 								held = nil
 								preamble = nil
 								line = nil
