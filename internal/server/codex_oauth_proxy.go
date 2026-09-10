@@ -182,12 +182,17 @@ func (s *Server) doForwardCodexOAuth(c *gin.Context, a *auth.Auth, path string, 
 	// including a failed WebSocket dial.
 	var resp *http.Response
 	upstreamTransport := "http"
+	// True when the turn went out on a socket the pool had already opened for
+	// an earlier turn. It decides whether a pre-output transport break is worth
+	// blaming on the credential; see the stale-socket branch below.
+	wsReused := false
 	if s.codexWSEgress.eligible(a, path, snap.BaseURL) {
 		turn, werr := s.codexWSEgress.dial(ctx, a, upstreamBody, upstreamSessionID, routingModel, routingTier)
 		switch {
 		case werr == nil:
 			resp = turn.resp
 			upstreamTransport = "ws"
+			wsReused = turn.reused
 		case !s.cfg.CodexWS.Upstream.HTTPFallbackAllowed():
 			// Diagnostic mode: surface the transport fault instead of masking
 			// it behind a fallback that would make it invisible. Still a
@@ -459,6 +464,27 @@ func (s *Server) doForwardCodexOAuth(c *gin.Context, a *auth.Auth, path string, 
 					Error:      "client canceled before first event",
 				})
 				return false, true
+			}
+			// A turn on a REUSED socket that produced no frame at all is the
+			// signature cc-core's Lease.Reused exists to name: the backend
+			// closed the connection while it sat idle in the pool, and the
+			// pool's probe cannot see it because Ping only writes a control
+			// frame — a half-closed socket accepts that write and hands back
+			// the queued close on the first read. Production shows the shape
+			// plainly: 131 of one hour's 513 pre-output breaks died in under a
+			// second, far too fast for any real keepalive timeout.
+			//
+			// The credential is healthy, so rotating away from it is the wrong
+			// move twice over — it burns one of the twelve failover rounds, and
+			// it lands the turn on an account whose prompt cache has never seen
+			// this conversation. Ask the loop to try this same credential once
+			// more instead; the pool already dropped the dead entry on the
+			// abnormal release, so the retry dials fresh.
+			if upstreamTransport == "ws" && wsReused {
+				c.Set(codexStaleSocketRetryKey, true)
+				log.Warnf("codex oauth: stale pooled socket via %s (attempt %d, %s): %v — retrying on the same credential",
+					a.ID, attempts, time.Since(start).Round(time.Millisecond), rerr)
+				return true, false
 			}
 			log.Warnf("codex oauth: stream broke before any output via %s (attempt %d, %s): %v — retrying on another credential",
 				a.ID, attempts, time.Since(start).Round(time.Millisecond), rerr)
@@ -898,6 +924,18 @@ const codexPreOutputWithholdCap = 4 * time.Minute
 // frame the HTTP transport sends.
 const codexStalledShedLabel = "upstream parked the turn: no output within the stall budget"
 
+// codexShedPreviewBytes is how much of a shed frame reaches the journal. The
+// Responses failure envelope spends its first ~200 bytes on id/object/status
+// bookkeeping, so the old cap cut the line exactly before `error` — the only
+// field that says WHY upstream refused. During a shed storm that is the
+// difference between "2273 sheds an hour" and knowing what to do about them.
+const codexShedPreviewBytes = 600
+
+// codexStaleSocketRetryKey marks an attempt that died on a pooled WebSocket the
+// backend had already closed. The forward loop reads it to keep the credential
+// eligible for one more round instead of excluding it.
+const codexStaleSocketRetryKey = "codex_stale_socket_retry"
+
 // codexStreamResult reports the outcome of a Codex backend SSE relay so the
 // caller can choose between a transparent retry (nothing reached the client
 // yet) and a logged give-up (bytes already committed downstream — from that
@@ -1110,7 +1148,7 @@ func streamSSECodexBackend(c *gin.Context, resp *http.Response, counts *usage.Co
 								// the response.failed that follows, so nothing
 								// commits the response.
 								shedding = true
-								out.shed = truncate(payload, 200)
+								out.shed = truncate(payload, codexShedPreviewBytes)
 								held = nil
 								preamble = nil
 								line = nil

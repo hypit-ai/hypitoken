@@ -552,3 +552,75 @@ func TestChatCompletionsStaysOnHTTP(t *testing.T) {
 		t.Error("/v1/responses is the path this transport exists for and must remain eligible")
 	}
 }
+
+// runCodexTurnCtx is runCodexTurn with the gin context handed back, so a test
+// can read the flags an attempt leaves behind for the forward loop.
+func runCodexTurnCtx(t *testing.T, s *Server, cred *auth.Auth, body []byte) (*gin.Context, bool, bool) {
+	t.Helper()
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("POST", "/v1/responses", strings.NewReader(string(body)))
+	retry, done := s.doForwardCodexOAuth(c, cred, "/v1/responses", body, true, "gpt-5.6-sol", "tok", "tester", "slot-1", time.Now(), 1)
+	return c, retry, done
+}
+
+// A pooled socket the backend closed while it sat idle must not cost the
+// credential its place in the failover order.
+//
+// The pool's liveness probe cannot catch this one: Ping only writes a control
+// frame, and a half-closed socket accepts that write, so the death is only
+// discovered on the turn's first read. In production this was 513 pre-output
+// breaks an hour, a quarter of them dying in under a second — every one of them
+// rotating a healthy account out of the running and landing the conversation on
+// an account with a cold prompt cache.
+func TestStaledPooledSocketRetriesTheSameCredential(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	// One clean turn, then nothing: the socket goes back to the pool and the
+	// next turn's first read finds it gone.
+	conn := &egressConn{frames: []string{
+		`{"type":"response.created","response":{"id":"resp_1"}}`,
+		`{"type":"response.output_text.delta","delta":"hi"}`,
+		`{"type":"response.completed","response":{"id":"resp_1"},"usage":{"input_tokens":11,"output_tokens":4}}`,
+	}}
+	dials := 0
+	cred := wsCred("ws-stale-account")
+	s := wsEgressServer(t, "https://unused.invalid", func(context.Context, codexws.DialConfig) (codexws.Conn, *http.Response, error) {
+		dials++
+		return conn, &http.Response{StatusCode: http.StatusSwitchingProtocols, Header: http.Header{}}, nil
+	}, cred)
+
+	if _, retry, done := runCodexTurnCtx(t, s, cred, wsTurnBody()); retry || !done {
+		t.Fatalf("first turn did not complete: retry=%v done=%v", retry, done)
+	}
+	c, retry, done := runCodexTurnCtx(t, s, cred, wsTurnBody())
+	if dials != 1 {
+		t.Fatalf("second turn did not reuse the pooled socket (dials=%d)", dials)
+	}
+	if !retry || done {
+		t.Fatalf("stale socket did not roll the attempt back: retry=%v done=%v", retry, done)
+	}
+	if !c.GetBool(codexStaleSocketRetryKey) {
+		t.Fatal("stale pooled socket excluded a healthy credential instead of asking for one more round on it")
+	}
+}
+
+// The counterpart: a FRESH socket that breaks before any output is a real
+// upstream fault on that credential, and must still rotate away from it.
+// Without this the flag would turn every transport break into a retry loop on
+// one account.
+func TestFreshSocketBreakStillRotatesCredential(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	conn := &egressConn{} // no frames at all: EOF on the first read
+	cred := wsCred("ws-fresh-break-account")
+	s := wsEgressServer(t, "https://unused.invalid", func(context.Context, codexws.DialConfig) (codexws.Conn, *http.Response, error) {
+		return conn, &http.Response{StatusCode: http.StatusSwitchingProtocols, Header: http.Header{}}, nil
+	}, cred)
+
+	c, retry, done := runCodexTurnCtx(t, s, cred, wsTurnBody())
+	if !retry || done {
+		t.Fatalf("pre-output break did not roll back: retry=%v done=%v", retry, done)
+	}
+	if c.GetBool(codexStaleSocketRetryKey) {
+		t.Fatal("a fresh socket's break was excused as a stale pooled one")
+	}
+}
