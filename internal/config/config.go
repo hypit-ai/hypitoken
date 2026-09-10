@@ -394,7 +394,12 @@ func (u *CodexWSUpstreamConfig) Normalize() {
 		u.ReadTimeoutSeconds = 180
 	}
 	if u.StallTimeoutSeconds == 0 {
-		u.StallTimeoutSeconds = 120
+		// Must stay inside codexPreOutputWithholdCap, which must in turn leave
+		// room for a second attempt inside the request's failover budget. All
+		// three moved together when 120/240/240 was found to mean that one
+		// parked credential consumed the whole request while the client sat on
+		// a connection that had produced no bytes at all.
+		u.StallTimeoutSeconds = 45
 	}
 	if u.CommittedStallTimeoutSeconds == 0 {
 		u.CommittedStallTimeoutSeconds = 240

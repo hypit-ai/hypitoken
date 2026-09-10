@@ -956,7 +956,13 @@ var codexContentFreeEvents = map[string]bool{
 // 24h sample of 1861 landed well inside it. Past the cap the withhold is
 // abandoned, the buffer is flushed in upstream's original order, and the turn
 // behaves exactly as it did before any of this existed.
-const codexPreOutputWithholdCap = 4 * time.Minute
+// codexPreOutputWithholdCap bounds how long ONE attempt may buffer content-free
+// frames before it gives up on staying invisible.
+//
+// It has to be well inside the whole request's failover budget, or a single
+// parked attempt eats the entire budget and no other credential is ever tried.
+// At four minutes — the same as the budget — that is exactly what happened.
+const codexPreOutputWithholdCap = 55 * time.Second
 
 // codexStalledShedLabel names a turn the backend accepted, heartbeated, and
 // never scheduled. It reads as a shed in the logs and the attempt archive

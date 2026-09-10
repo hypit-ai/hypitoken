@@ -252,7 +252,16 @@ func (s *Server) forwardWithFailover(c *gin.Context, provider, path, model, clie
 	// on a Responses stream, so the loop stops before the caller does. It
 	// bounds only the decision to *start* another attempt — a single long
 	// stream that is actually producing output runs as long as it likes.
-	const failoverDeadline = 4 * time.Minute
+	// How long the whole request may spend hunting for a credential that will
+	// serve it. Four minutes was set when a refusal was rare and worth waiting
+	// out. During an upstream capacity storm it is the wrong number by a lot:
+	// a doomed request holds the client for four minutes and then fails anyway,
+	// while a client that gets its answer in two minutes can simply ask
+	// again. Production during a 90%-refusal storm: 68.8% of the requests that
+	// succeeded at all succeeded on the FIRST credential, and the ones that
+	// needed five or more took two to three minutes to get there — long enough
+	// that the user had given up either way.
+	const failoverDeadline = 120 * time.Second
 	tried := make(map[string]bool)
 	attempts := 0
 	var lastDeferred *deferredResponse

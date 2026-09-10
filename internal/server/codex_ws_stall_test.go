@@ -34,13 +34,13 @@ func TestStallBudgetStaysInsideTheWithholdCap(t *testing.T) {
 }
 
 // TestStallBudgetDefaultsAndOptOut guards the two config edges: an unset value
-// must arrive as the 90s default rather than as "disabled", and a negative one
+// must arrive as a real default rather than as "disabled", and a negative one
 // must genuinely disable the budget so the previous behaviour is reproducible
 // without a code change.
 func TestStallBudgetDefaultsAndOptOut(t *testing.T) {
 	var unset config.CodexWSUpstreamConfig
 	unset.Normalize()
-	if got, want := unset.StallTimeoutSeconds, 120; got != want {
+	if got, want := unset.StallTimeoutSeconds, 45; got != want {
 		t.Fatalf("default stall budget = %ds, want %ds", got, want)
 	}
 
@@ -561,3 +561,19 @@ func TestStallRelaxerResolvesOnlyAgainstAWebSocketStream(t *testing.T) {
 type stallRelaxRecorder struct{ fn func(time.Duration) }
 
 func (s stallRelaxRecorder) RelaxStall(d time.Duration) { s.fn(d) }
+
+// One attempt must never be able to spend the whole request's failover budget.
+// At four minutes each — which is what both were — a single parked credential
+// ate the entire budget and no other credential was ever tried, while the
+// client sat on a connection that had produced no bytes at all.
+func TestOneAttemptCannotEatTheWholeFailoverBudget(t *testing.T) {
+	const failoverDeadline = 120 * time.Second // mirrors proxy.go
+	if codexPreOutputWithholdCap >= failoverDeadline {
+		t.Fatalf("withhold cap %v >= failover budget %v: one parked attempt consumes the request",
+			codexPreOutputWithholdCap, failoverDeadline)
+	}
+	if codexPreOutputWithholdCap*2 > failoverDeadline {
+		t.Fatalf("withhold cap %v leaves room for only one attempt inside %v",
+			codexPreOutputWithholdCap, failoverDeadline)
+	}
+}
