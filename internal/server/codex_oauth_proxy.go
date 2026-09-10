@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -544,8 +545,9 @@ func (s *Server) doForwardCodexOAuth(c *gin.Context, a *auth.Auth, path string, 
 				// egress change is judged on: a WebSocket carries protocol-level
 				// ping/pong across the silences that truncate an idle HTTP
 				// stream, so if it is working, this line stops saying "ws".
-				log.Warnf("codex oauth: %s stream ended before terminal event (truncated upstream) via %s after %s (committed by %q%s): %v",
-					upstreamTransport, a.ID, time.Since(start).Round(time.Millisecond), res.committedBy, codexFatalCodeSuffix(res.fatalCode), rerr)
+				log.Warnf("codex oauth: %s stream ended before terminal event (truncated upstream) via %s after %s (committed by %q%s%s): %v",
+					upstreamTransport, a.ID, time.Since(start).Round(time.Millisecond), res.committedBy,
+					codexCommittedLineSuffix(res.committedLine), codexFatalCodeSuffix(res.fatalCode), rerr)
 			}
 		}
 	default:
@@ -961,6 +963,16 @@ const codexShedPreviewBytes = 600
 // eligible for one more round instead of excluding it.
 const codexStaleSocketRetryKey = "codex_stale_socket_retry"
 
+// codexCommittedLineSuffix names the bytes that committed a response when the
+// committing frame declared no event type, so an empty `committed by ""` can be
+// told apart from the other things that produce the same empty string.
+func codexCommittedLineSuffix(line string) string {
+	if line == "" {
+		return ""
+	}
+	return " via=" + strconv.Quote(line)
+}
+
 // codexCapacityShedKey marks an attempt withheld because upstream refused the
 // turn for capacity. The forward loop reads it to retry the SAME credential a
 // bounded number of times before rotating; see the shed branch for why.
@@ -989,6 +1001,13 @@ type codexStreamResult struct {
 	// demoted: a shed that arrived after output had started, so it could only
 	// be demoted on the way out rather than withheld.
 	demoted shedSignal
+	// committedLine is the first ~120 bytes actually written downstream, kept
+	// only when the committing frame declared no event type. `committedBy` alone
+	// has now sent three separate investigations down the wrong path: it reports
+	// an empty string for a typeless frame, an orphaned event terminator and an
+	// unparsed data line alike, and each of those is a different bug with a
+	// different fix. The bytes say which.
+	committedLine string
 	// committedBy is the event type of the frame that first reached the client
 	// and so closed the withhold window. It exists because "which frame
 	// committed the response" decided, twice in one morning, whether a stalled
@@ -1346,6 +1365,9 @@ func streamSSECodexBackend(c *gin.Context, resp *http.Response, counts *usage.Co
 				if !sentAny {
 					out.firstOutputAt = time.Now()
 					out.committedBy = lastPayloadType
+					if lastPayloadType == "" {
+						out.committedLine = truncate(emit, 120)
+					}
 				}
 				sentAny = true
 			}
