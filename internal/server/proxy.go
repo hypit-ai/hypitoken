@@ -244,19 +244,22 @@ func (s *Server) forwardWithFailover(c *gin.Context, provider, path, model, clie
 	// Twelve for Anthropic, where a credential-level failure is usually a 429
 	// or a 401 and the next credential genuinely is a fresh roll of the dice.
 	//
-	// Four for Codex, because production says the roll is not fresh at all.
-	// Measured across an hour of an upstream capacity storm: requests served by
-	// the FIRST credential produced output 32.4% of the time (58/179), and
-	// requests that had been shed and rotated produced output 4.2% of the time
-	// (20/472). Rotation is not rescuing these turns — something about the turn
-	// itself is being refused everywhere — so the eight extra rounds buy almost
-	// nothing and cost the caller the better part of two minutes. A client that
-	// gets its answer quickly and asks again starts a fresh turn with the 32%
-	// odds, which is eight times better than the rotation it replaces.
-	maxAttempts := 12
-	if auth.NormalizeProvider(provider) == auth.ProviderOpenAI {
-		maxAttempts = 4
-	}
+	// Twelve for Codex too, after cutting it to four and measuring the result.
+	//
+	// The cut looked well founded: during a capacity storm, requests served by
+	// the FIRST credential produced output 32.4% of the time (58/179) while
+	// requests that had been shed and rotated managed 4.2% (20/472), so the
+	// later rounds looked like they were buying almost nothing for two minutes
+	// of the caller's time. Those are CONDITIONAL rates, and reading an
+	// absolute contribution out of them was the mistake: over the thirteen
+	// minutes that four was live, the answer rate fell from 10.5% to 2.3% —
+	// while upstream refusals over the same window were LOWER than before
+	// (76.1% against 81.1%), so the storm cannot be blamed for it. The tail
+	// rounds were producing about three quarters of all the answers.
+	//
+	// Latency is bounded by the failover deadline and the no-bytes watchdog
+	// above, which is the right place for it. The attempt count is not.
+	const maxAttempts = 12
 	// A retry only helps while someone is still waiting for the answer.
 	// maxAttempts alone assumed attempts were cheap, which held while a
 	// credential-level failure was an immediate 429 or 401. It stopped holding
