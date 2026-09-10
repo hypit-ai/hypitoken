@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -575,5 +576,34 @@ func TestOneAttemptCannotEatTheWholeFailoverBudget(t *testing.T) {
 	if codexPreOutputWithholdCap*2 > failoverDeadline {
 		t.Fatalf("withhold cap %v leaves room for only one attempt inside %v",
 			codexPreOutputWithholdCap, failoverDeadline)
+	}
+}
+
+// A request that has produced nothing must end at the failover deadline, and
+// one that is delivering an answer must not.
+//
+// The deadline gates only the START of an attempt, which turned out to be half
+// a bound: production ran twelve attempts that all began inside the 120s window
+// and then let the twelfth run 464 seconds on its own — first content-bearing
+// frame at 347s, no output tokens, 584s total, and a silent socket for the
+// whole of it. That is what users reported as "fifteen minutes, no response".
+func TestUncommittedRequestIsBoundedButAProducingOneIsNot(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("POST", "/v1/responses", strings.NewReader("{}"))
+
+	// No flag in the context at all: marking must be a safe no-op, because the
+	// Anthropic path and the compact route never install one.
+	markCommitted(c)
+
+	var committed atomic.Bool
+	c.Set(committedFlagKey, &committed)
+	if committed.Load() {
+		t.Fatal("flag started set")
+	}
+	markCommitted(c)
+	if !committed.Load() {
+		t.Fatal("the relay's commit did not reach the watchdog's flag — an answering stream would be cut")
 	}
 }

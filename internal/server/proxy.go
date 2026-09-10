@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -262,6 +263,45 @@ func (s *Server) forwardWithFailover(c *gin.Context, provider, path, model, clie
 	// needed five or more took two to three minutes to get there — long enough
 	// that the user had given up either way.
 	const failoverDeadline = 120 * time.Second
+
+	// The deadline above gates only the START of an attempt, and that turned
+	// out to be half a bound. Production, on the version that shipped it:
+	// twelve attempts all began inside the 120s window, and then the twelfth
+	// ran 464 seconds on its own — first content-bearing frame at 347s, no
+	// output tokens, 584s total. The client had a silent socket for the whole
+	// of it, which is what users report as "fifteen minutes, no response".
+	//
+	// So bound the request itself, but only while it has produced NOTHING. A
+	// stream that is actually delivering tokens may run as long as it likes —
+	// that is a real answer arriving slowly, and cutting it would be the
+	// truncation bug all over again. `committed` is set by the relay's lazy
+	// commit, i.e. the moment the first byte reaches the client.
+	//
+	// Scoped to Codex, and not to compaction. The Anthropic relay does not mark
+	// commitment, so arming this there would cut a Claude turn that is merely
+	// thinking; /v1/responses/compact answers with one JSON object after real
+	// work and has no first byte to wait for.
+	if auth.NormalizeProvider(provider) == auth.ProviderOpenAI && path != "/v1/responses/compact" {
+		var committed atomic.Bool
+		c.Set(committedFlagKey, &committed)
+		reqCtx, cancelReq := context.WithCancel(c.Request.Context())
+		defer cancelReq()
+		c.Request = c.Request.WithContext(reqCtx)
+		go func() {
+			t := time.NewTimer(failoverDeadline)
+			defer t.Stop()
+			select {
+			case <-reqCtx.Done():
+			case <-t.C:
+				if !committed.Load() {
+					log.Warnf("proxy: %s produced no bytes in %s — ending the request so the caller can retry (model=%s)",
+						path, failoverDeadline, model)
+					cancelReq()
+				}
+			}
+		}()
+	}
+
 	tried := make(map[string]bool)
 	attempts := 0
 	var lastDeferred *deferredResponse

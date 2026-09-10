@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -381,9 +382,9 @@ func (s *Server) doForwardCodexOAuth(c *gin.Context, a *auth.Auth, path string, 
 		// client. They report the same codexStreamResult, so everything
 		// downstream is shared.
 		if isChat {
-			res = streamCodexAsChatCompletions(c, resp.Body, &counts, model, chatStreamWantsUsage(body), func() { relaxStall(); writeSSEResponseHeaders(c, resp) })
+			res = streamCodexAsChatCompletions(c, resp.Body, &counts, model, chatStreamWantsUsage(body), func() { relaxStall(); markCommitted(c); writeSSEResponseHeaders(c, resp) })
 		} else {
-			res = streamSSECodexBackend(c, resp, &counts, func() { relaxStall(); writeSSEResponseHeaders(c, resp) })
+			res = streamSSECodexBackend(c, resp, &counts, func() { relaxStall(); markCommitted(c); writeSSEResponseHeaders(c, resp) })
 		}
 		// A turn the backend parked and never scheduled is a capacity refusal
 		// that happens to be shaped like silence: over the WebSocket it arrives
@@ -1001,6 +1002,21 @@ func codexCommittedLineSuffix(line string) string {
 		return ""
 	}
 	return " via=" + strconv.Quote(line)
+}
+
+// committedFlagKey carries a *atomic.Bool the relay sets the moment the first
+// byte reaches the client. The forward loop's watchdog reads it to tell a
+// request that is delivering an answer slowly from one that has delivered
+// nothing at all — only the second kind may be cut.
+const committedFlagKey = "response_committed"
+
+// markCommitted flips the flag the forward loop's watchdog reads.
+func markCommitted(c *gin.Context) {
+	if v, ok := c.Get(committedFlagKey); ok {
+		if b, ok := v.(*atomic.Bool); ok {
+			b.Store(true)
+		}
+	}
 }
 
 // codexCapacityShedKey marks an attempt withheld because upstream refused the
