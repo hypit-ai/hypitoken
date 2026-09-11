@@ -345,19 +345,19 @@ func TestCodexWSEgressEligibility(t *testing.T) {
 	oauth := wsCred("cred-1")
 	apikey := &auth.Auth{ID: "cred-2", Kind: auth.KindAPIKey, Provider: auth.ProviderOpenAI}
 
-	if !e.eligible(oauth, "/v1/responses", "") {
+	if !e.eligible(oauth, "/v1/responses", true, "") {
 		t.Fatal("a plain OAuth /v1/responses request should be eligible")
 	}
-	if e.eligible(apikey, "/v1/responses", "") {
+	if e.eligible(apikey, "/v1/responses", true, "") {
 		t.Fatal("API-key credentials do not reach chatgpt.com and must not be eligible")
 	}
-	if e.eligible(oauth, "/v1/responses/compact", "") {
+	if e.eligible(oauth, "/v1/responses/compact", true, "") {
 		t.Fatal("compact has no WebSocket equivalent and must not be eligible")
 	}
-	if e.eligible(oauth, "/v1/responses", "https://relay.example/codex") {
+	if e.eligible(oauth, "/v1/responses", true, "https://relay.example/codex") {
 		t.Fatal("a per-credential relay base URL must not be assumed to terminate WebSockets")
 	}
-	if e.eligible(nil, "/v1/responses", "") {
+	if e.eligible(nil, "/v1/responses", true, "") {
 		t.Fatal("nil credential must not be eligible")
 	}
 
@@ -371,10 +371,10 @@ func TestCodexWSEgressEligibility(t *testing.T) {
 		CodexWS:               config.CodexWSConfig{Upstream: only},
 	})
 	defer scoped.Close()
-	if !scoped.eligible(oauth, "/v1/responses", "") {
+	if !scoped.eligible(oauth, "/v1/responses", true, "") {
 		t.Fatal("the allowlisted credential was excluded")
 	}
-	if scoped.eligible(wsCred("cred-9"), "/v1/responses", "") {
+	if scoped.eligible(wsCred("cred-9"), "/v1/responses", true, "") {
 		t.Fatal("a credential outside the allowlist was admitted; there would be no control group")
 	}
 
@@ -382,7 +382,7 @@ func TestCodexWSEgressEligibility(t *testing.T) {
 	// An operator writing the short label gets an entry that admits nothing —
 	// which reads exactly like "the WebSocket egress had no effect" — so the
 	// id must be matched exactly and the mismatch has to be announced.
-	if scoped.eligible(wsCred("cred-1@gmail.com-pro.json"), "/v1/responses", "") {
+	if scoped.eligible(wsCred("cred-1@gmail.com-pro.json"), "/v1/responses", true, "") {
 		t.Fatal("allowlist matched on a prefix; a canary must admit exactly what was named")
 	}
 
@@ -394,7 +394,7 @@ func TestCodexWSEgressEligibility(t *testing.T) {
 		CodexWS: config.CodexWSConfig{Upstream: unset}}
 	offEgress := newCodexWSEgress(off)
 	defer offEgress.Close()
-	if offEgress.eligible(oauth, "/v1/responses", "") {
+	if offEgress.eligible(oauth, "/v1/responses", true, "") {
 		t.Fatal("WebSocket egress is on without being configured")
 	}
 }
@@ -449,20 +449,23 @@ func TestHandshakeResponseHeadersDropsUpgradeNoise(t *testing.T) {
 	}
 }
 
-// The claim that the WebSocket is a pure transport swap rests on the branches
-// below sharing the response pipeline. These two are the ones with their own
-// readers — the non-streaming aggregator and the chat-completions bridge — so
-// they are where a transport that only worked for plain SSE would show it.
-func TestCodexWSEgressServesNonStreamingClient(t *testing.T) {
+// A non-streaming client still gets one JSON object — over HTTP now, since the
+// WebSocket does not serve this shape (see TestNonStreamingStaysOnHTTP).
+func TestNonStreamingClientGetsJSONOverHTTP(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	conn := &egressConn{frames: []string{
-		`{"type":"response.created","response":{"id":"resp_1"}}`,
-		`{"type":"response.output_text.delta","delta":"hi"}`,
-		`{"type":"response.completed","response":{"id":"resp_1","status":"completed","output":[]},"usage":{"input_tokens":9,"output_tokens":2}}`,
-	}}
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(
+			"event: response.created\n" + `data: {"type":"response.created","response":{"id":"resp_1"}}` + "\n\n" +
+				"event: response.output_text.delta\n" + `data: {"type":"response.output_text.delta","delta":"hi"}` + "\n\n" +
+				"event: response.completed\n" + `data: {"type":"response.completed","response":{"id":"resp_1","status":"completed","output":[]},"usage":{"input_tokens":9,"output_tokens":2}}` + "\n\n"))
+	}))
+	t.Cleanup(backend.Close)
+
 	cred := wsCred("ws-nonstream-account")
-	s := wsEgressServer(t, "https://unused.invalid", func(context.Context, codexws.DialConfig) (codexws.Conn, *http.Response, error) {
-		return conn, &http.Response{StatusCode: http.StatusSwitchingProtocols, Header: http.Header{}}, nil
+	s := wsEgressServer(t, backend.URL, func(context.Context, codexws.DialConfig) (codexws.Conn, *http.Response, error) {
+		t.Error("a non-streaming turn dialled the WebSocket")
+		return nil, nil, errors.New("should not dial")
 	}, cred)
 
 	body := []byte(`{"model":"gpt-5.6-sol","stream":false,"prompt_cache_key":"conv-ns","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]}]}`)
@@ -477,17 +480,8 @@ func TestCodexWSEgressServesNonStreamingClient(t *testing.T) {
 	if ct := w.Header().Get("Content-Type"); !strings.Contains(ct, "application/json") {
 		t.Fatalf("Content-Type = %q, want JSON for a non-streaming client", ct)
 	}
-	var out map[string]any
-	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
-		t.Fatalf("aggregated body is not JSON: %v (%s)", err, w.Body.String())
-	}
-	if out["id"] != "resp_1" {
-		t.Fatalf("aggregate lost the response: %v", out)
-	}
-	// The frame still says stream:true — the backend has no other mode — and the
-	// aggregation downstream is what makes that invisible to the caller.
-	if conn.sentFrame(t)["stream"] != true {
-		t.Fatal("non-streaming request went upstream with stream:false")
+	if !strings.Contains(w.Body.String(), "response.completed") && !strings.Contains(w.Body.String(), "resp_1") {
+		t.Fatalf("the aggregated object did not reach the client: %q", w.Body.String())
 	}
 }
 
@@ -542,13 +536,13 @@ func TestChatCompletionsStaysOnHTTP(t *testing.T) {
 		return nil, nil, errors.New("dial must not be reached")
 	}, cred)
 
-	if s.codexWSEgress.eligible(cred, "/v1/chat/completions", "") {
+	if s.codexWSEgress.eligible(cred, "/v1/chat/completions", true, "") {
 		t.Error("chat/completions was routed over the WebSocket — the translated body parks there and the turn produces nothing")
 	}
-	if s.codexWSEgress.eligible(cred, "/v1/responses/compact", "") {
+	if s.codexWSEgress.eligible(cred, "/v1/responses/compact", true, "") {
 		t.Error("compact has no WebSocket equivalent and must stay on HTTP")
 	}
-	if !s.codexWSEgress.eligible(cred, "/v1/responses", "") {
+	if !s.codexWSEgress.eligible(cred, "/v1/responses", true, "") {
 		t.Error("/v1/responses is the path this transport exists for and must remain eligible")
 	}
 }
@@ -677,5 +671,64 @@ func TestSameCredentialShedRetriesAreBounded(t *testing.T) {
 	if codexSameCredShedRetries > 3 {
 		t.Fatalf("a single credential may consume %d of the loop's 12 failover rounds",
 			codexSameCredShedRetries)
+	}
+}
+
+// A non-streaming turn keeps the HTTP transport.
+//
+// Production over three hours on /v1/responses, same clients, same models,
+// same credentials:
+//
+//	streaming      2682 turns   95.9% produced output   1.1 credentials
+//	non-streaming   244 turns    1.6% produced output   5.4 credentials
+//
+// Per client it is the same story rather than an average of two populations —
+// one caller ran 98.9% streaming against 0.0% non-streaming in the same
+// window. What comes back over the WebSocket is `close 1000 (normal)` about
+// nine seconds in, no terminal event, on every credential the loop tries.
+func TestNonStreamingStaysOnHTTP(t *testing.T) {
+	up := config.CodexWSUpstreamConfig{Mode: config.CodexWSUpstreamAuto}
+	up.Normalize()
+	cfg := &config.Config{ChatGPTBackendBaseURL: "https://chatgpt.com/backend-api", CodexWS: config.CodexWSConfig{Upstream: up}}
+	e := newCodexWSEgress(cfg)
+	t.Cleanup(e.Close)
+	oauth := wsCred("cred-1")
+
+	if e.eligible(oauth, "/v1/responses", false, "") {
+		t.Error("a non-streaming turn was routed over the WebSocket; production serves 1.6% of those")
+	}
+	if !e.eligible(oauth, "/v1/responses", true, "") {
+		t.Error("a streaming turn must still take the WebSocket — that path serves 95.9%")
+	}
+}
+
+// The WebSocket is never dialled for a non-streaming turn, not merely
+// deprioritised. eligible() returning false has to mean no socket is opened at
+// all, or the credential still pays for a handshake it cannot use.
+func TestNonStreamingNeverDialsTheWebSocket(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("event: response.completed\n" +
+			`data: {"type":"response.completed","usage":{"input_tokens":1,"output_tokens":1}}` + "\n\n"))
+	}))
+	t.Cleanup(backend.Close)
+
+	dialed := false
+	cred := wsCred("ws-nonstream")
+	s := wsEgressServer(t, backend.URL, func(context.Context, codexws.DialConfig) (codexws.Conn, *http.Response, error) {
+		dialed = true
+		return nil, nil, errors.New("should not dial")
+	}, cred)
+
+	body := []byte(`{"model":"gpt-5.6-sol","stream":false,"prompt_cache_key":"conv",` +
+		`"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}]}`)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("POST", "/v1/responses", strings.NewReader(string(body)))
+	s.doForwardCodexOAuth(c, cred, "/v1/responses", body, false, "gpt-5.6-sol", "tok", "tester", "slot", time.Now(), 1)
+
+	if dialed {
+		t.Fatal("a non-streaming turn dialled the WebSocket")
 	}
 }

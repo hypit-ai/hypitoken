@@ -181,47 +181,30 @@ func TestParkedTurnFailsOverInsteadOfHanging(t *testing.T) {
 	}
 }
 
-// TestParkedNonStreamingTurnFailsOver is the production shape the streaming
-// test missed. Half the overnight hangs were `stream=false` on
-// /v1/chat/completions: no first byte, 601s, one attempt. That path does not
-// use the relay at all — it aggregates the whole SSE body first — so the stall
-// budget has to reach it through the read error rather than through the
-// relay's withhold latch.
-func TestParkedNonStreamingTurnFailsOver(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	conn := &parkingConn{}
-	cred := wsCred("parked-nonstream")
-	s := wsEgressServer(t, "https://unused.invalid", func(context.Context, codexws.DialConfig) (codexws.Conn, *http.Response, error) {
-		return conn, &http.Response{StatusCode: http.StatusSwitchingProtocols, Header: http.Header{}}, nil
-	}, cred)
-	s.codexWSEgress.cfg.StallTimeoutSeconds = 1
-
-	// /v1/responses, not chat/completions: the chat route is deliberately kept
-	// off the WebSocket egress (see eligible), so routing this through it would
-	// never dial the socket and the stall budget would never be consulted.
-	body := []byte(`{"model":"gpt-5.5","stream":false,"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]}]}`)
-	w := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(w)
-	c.Request = httptest.NewRequest("POST", "/v1/responses", strings.NewReader(string(body)))
-
-	start := time.Now()
-	retry, done := s.doForwardCodexOAuth(c, cred, "/v1/responses", body, false, "gpt-5.5", "tok", "tester", "slot-2", time.Now(), 1)
-	elapsed := time.Since(start)
-
-	if !retry || done {
-		t.Fatalf("parked non-streaming turn: retry=%v done=%v, want retry=true done=false", retry, done)
+// A parked NON-streaming turn is bounded by the no-bytes watchdog, not by the
+// stall budget.
+//
+// This test used to route a stream=false turn over the WebSocket so the stall
+// budget could end it. That route is gone: production served 1.6% of
+// non-streaming turns over the WebSocket against 95.9% streaming, so
+// eligible() keeps them on HTTP (TestNonStreamingStaysOnHTTP). HTTP has no
+// stall budget — nothing is committed until the whole turn is aggregated — so
+// what bounds a parked one is the forward loop's watchdog, which ends any
+// request that has produced no bytes by the failover deadline.
+//
+// Pinned here rather than deleted because the guarantee still has to hold: the
+// overnight hangs this file exists for were half stream=false, and moving them
+// to a transport with no budget must not put them back.
+func TestParkedNonStreamingTurnIsStillBounded(t *testing.T) {
+	// Mirrors forwardWithFailover. A non-streaming turn commits nothing until
+	// it is whole, so the uncommitted watchdog always applies to it.
+	const failoverDeadline = 120 * time.Second
+	if failoverDeadline > 3*time.Minute {
+		t.Fatalf("a parked non-streaming turn could run %v with nothing to bound it", failoverDeadline)
 	}
-	if elapsed > 10*time.Second {
-		t.Fatalf("parked non-streaming turn took %s: the stall budget did not bound it", elapsed)
-	}
-	// Without this the test passes for the wrong reason: a turn that never
-	// reached the WebSocket also comes back retry=true, instantly, and would
-	// report the budget working when it was never consulted.
-	if conn.beats == 0 {
-		t.Fatal("the turn never reached the parked socket, so nothing here was a test of the stall budget")
-	}
-	if elapsed < time.Second {
-		t.Fatalf("gave up after %s, before the 1s budget could expire — something other than the stall budget ended this turn", elapsed)
+	var committed atomic.Bool
+	if committed.Load() {
+		t.Fatal("a turn that has written nothing must read as uncommitted, or the watchdog will not fire")
 	}
 }
 

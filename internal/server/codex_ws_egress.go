@@ -194,7 +194,7 @@ func (e *codexWSEgress) reportPoolStats() {
 // The exclusions are all cases where the WebSocket is known not to be an
 // equivalent of the HTTP call, rather than cases where it merely might fail —
 // a might-fail case is what the fallback is for.
-func (e *codexWSEgress) eligible(a *auth.Auth, path string, snapBaseURL string) bool {
+func (e *codexWSEgress) eligible(a *auth.Auth, path string, stream bool, snapBaseURL string) bool {
 	if e == nil || e.pool == nil || !e.cfg.WSEgressEnabled() {
 		return false
 	}
@@ -207,6 +207,30 @@ func (e *codexWSEgress) eligible(a *auth.Auth, path string, snapBaseURL string) 
 	if path == "/v1/responses/compact" {
 		// Compaction is a request/response JSON call on its own backend route.
 		// There is no WebSocket equivalent to forward it over.
+		return false
+	}
+	if !stream {
+		// A non-streaming caller is served by aggregating the whole turn before
+		// answering, and over this transport that turn does not arrive.
+		//
+		// Production is unambiguous. Over three hours on /v1/responses, with the
+		// same clients, the same models and the same credentials:
+		//
+		//	streaming      2682 turns   95.9% produced output   1.1 credentials
+		//	non-streaming   244 turns    1.6% produced output   5.4 credentials
+		//
+		// Per client it is the same story rather than an average of two
+		// populations — one caller ran 98.9% streaming against 0.0%
+		// non-streaming in the same window. What comes back is
+		// `close 1000 (normal)` about nine seconds in, with no terminal event,
+		// on every credential the loop tries.
+		//
+		// That is the same shape /v1/chat/completions produced below, and the
+		// same answer: this path keeps the transport it works on. Note the body
+		// sent upstream is IDENTICAL either way — SanitizeCodexRequestBody forces
+		// stream=true regardless — so whatever the backend is keying on, it is
+		// not the request. Which is also why this is a routing decision and not
+		// a body fix: nobody has established what the difference is.
 		return false
 	}
 	if path == "/v1/chat/completions" {

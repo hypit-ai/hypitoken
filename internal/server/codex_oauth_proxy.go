@@ -200,7 +200,7 @@ func (s *Server) doForwardCodexOAuth(c *gin.Context, a *auth.Auth, path string, 
 	// an earlier turn. It decides whether a pre-output transport break is worth
 	// blaming on the credential; see the stale-socket branch below.
 	wsReused := false
-	if s.codexWSEgress.eligible(a, path, snap.BaseURL) {
+	if s.codexWSEgress.eligible(a, path, stream, snap.BaseURL) {
 		turn, werr := s.codexWSEgress.dial(ctx, a, upstreamBody, upstreamSessionID, routingModel, routingTier)
 		switch {
 		case werr == nil:
