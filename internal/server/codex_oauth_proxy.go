@@ -1490,7 +1490,13 @@ func streamSSECodexBackend(c *gin.Context, resp *http.Response, counts *usage.Co
 		// is untouched; what is given up is the HTTP status, and writeAPIError
 		// switches to an in-band error frame once anything has gone out.
 		PreOutputKeepalive: true,
-		Next:               next,
+		// Two seconds, which is when a caller talking to the vendor directly
+		// would have seen `response.created`. At the shared ten it never fired:
+		// probes against production reached their first token at 3.7s and 5.8s
+		// having sent nothing at all, so the window this was meant to cover was
+		// precisely the window it missed.
+		PreOutputKeepaliveIdle: 2 * time.Second,
+		Next:                   next,
 	})
 	out.sawTerminal = r.SawTerminal
 	out.wroteAny = r.WroteAny
