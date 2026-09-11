@@ -1124,6 +1124,10 @@ export default {
       // upstream quota panel, which only knows the current window.
       billing: {
         probe: "Check billing",
+        card: "Card",
+        cardExpired: "expired",
+        cardNone: "none",
+        cardShared: "This card also pays for {{n}} other account(s)",
         reprobe: "Re-probe",
         querying: "Querying subscription state…",
         notProbed:

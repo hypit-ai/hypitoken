@@ -90,6 +90,11 @@ export function CodexBillingPanel({
   // will_renew has two reporters; /subscriptions needs an account_id some
   // credentials don't carry, and then last_active_subscription is the only one.
   const willRenew = portal ? portal.will_renew : last?.will_renew;
+  const cards = s?.info?.payment_methods ?? [];
+  // A card is valid through the END of its expiry month; treating the 1st as
+  // the cutoff would flag every card as dead for the month it is still good in.
+  const cardExpired = (m: { exp_month?: number; exp_year?: number }) =>
+    !!m.exp_year && !!m.exp_month && new Date() >= new Date(m.exp_year, m.exp_month, 1);
 
   return (
     <div className="space-y-3">
@@ -198,6 +203,46 @@ export function CodexBillingPanel({
                   </span>
                 )}
               </>
+            }
+          />
+          <Row
+            k={t("admin.creds.billing.card")}
+            v={
+              cards.length === 0 ? (
+                <span className="text-muted-foreground">{t("admin.creds.billing.cardNone")}</span>
+              ) : (
+                <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                  {cards.map((m, i) => {
+                    const dead = cardExpired(m);
+                    return (
+                      <span key={m.id ?? i} className="tabular-nums">
+                        {m.last4 ? (
+                          <>
+                            <span className="uppercase text-muted-foreground">
+                              {m.brand || m.type || "card"}
+                            </span>{" "}
+                            ····{m.last4}
+                            {m.exp_month && m.exp_year && (
+                              <span
+                                className={cn(
+                                  "ml-1",
+                                  dead ? "text-destructive" : "text-muted-foreground",
+                                )}
+                              >
+                                {String(m.exp_month).padStart(2, "0")}/
+                                {String(m.exp_year).slice(-2)}
+                                {dead ? ` · ${t("admin.creds.billing.cardExpired")}` : ""}
+                              </span>
+                            )}
+                          </>
+                        ) : (
+                          <span className="text-muted-foreground">{m.type || "—"}</span>
+                        )}
+                      </span>
+                    );
+                  })}
+                </span>
+              )
             }
           />
           {s.free && (

@@ -1097,6 +1097,10 @@ export default {
       // “买的什么档位、什么时候续的费、还续不续”，与上游配额是两回事。
       billing: {
         probe: "查询账单",
+        card: "付款卡",
+        cardExpired: "已过期",
+        cardNone: "无",
+        cardShared: "这张卡还在为另外 {{n}} 个账号付款",
         reprobe: "重新查询",
         querying: "正在查询订阅状态…",
         notProbed: "尚未查询。这里读取的是 ChatGPT 账单门户，不会通过该凭证发起模型请求。",
