@@ -40,7 +40,16 @@ import (
 // CLAUDE.md's Codex-OAuth caveat.
 
 const (
-	codexWSFirstFrameTimeout = 30 * time.Second
+	// codexWSFirstFrameTimeout bounds the wait for the client's opening
+	// response.create frame. It was 30s, which broke codex-tui's normal
+	// rhythm: the CLI opens the socket when it starts and sends nothing until
+	// the user submits a prompt, so any pause longer than 30s — reading code,
+	// thinking — was closed as a protocol error and surfaced to the user as
+	// an endless "reconnecting" loop (176 of 202 sockets on 2026-09-13 died
+	// at exactly 30.00s). Nothing upstream is held open before the first
+	// frame — credential acquisition happens after this read — so a waiting
+	// socket costs one goroutine, and the bound matches every later frame's.
+	codexWSFirstFrameTimeout = codexWSReadDeadline
 	codexWSUpstreamPingEvery = 20 * time.Second
 	codexWSReadDeadline      = 15 * time.Minute
 	codexWSWriteDeadline     = 2 * time.Minute
@@ -171,6 +180,16 @@ func (s *Server) handleCodexResponsesWS(c *gin.Context) {
 	}
 	defer clientConn.Close()
 	clientConn.SetReadLimit(s.cfg.CodexWS.ReadLimitBytes)
+	// A client that pings is alive even with nothing to say yet. gorilla
+	// answers pings with a pong on its own but never touches the read
+	// deadline, so without this an idle-but-healthy socket still dies on the
+	// first-frame deadline. Cleared once the first frame lands (below), where
+	// the deadline goes away entirely and a ping must not reintroduce one.
+	clientConn.SetPingHandler(func(appData string) error {
+		_ = clientConn.SetReadDeadline(time.Now().Add(codexWSFirstFrameTimeout))
+		return clientConn.WriteControl(gorillaws.PongMessage, []byte(appData),
+			time.Now().Add(codexWSWriteDeadline))
+	})
 
 	// First client frame (response.create) — learn model + previous_response_id
 	// before acquiring a credential.
@@ -181,6 +200,7 @@ func (s *Server) handleCodexResponsesWS(c *gin.Context) {
 		return
 	}
 	_ = clientConn.SetReadDeadline(time.Time{})
+	clientConn.SetPingHandler(nil)
 
 	// The model is read here for credential acquisition, billing, AND the
 	// handshake's x-codex-routing-hint, which is set from this same value just
