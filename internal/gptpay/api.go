@@ -313,6 +313,7 @@ func (s *Service) serve(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, statusView(snap))
 	}
 }
+
 // subscriptionSummary is deliberately a subset of auth.CodexSubscriptionInfo:
 // has-ever-paid / has-active / plan / renewal / delinquency answer exactly
 // what an operator checking a session before spending a real card needs to
