@@ -289,3 +289,31 @@ bash /var/backups/gptpay/20260915T091800Z/rollback.sh
 
 回滚：`bash /var/backups/gptpay/20260915T120612Z/rollback.sh`（只换二进制，
 cc-core 侧的改动不受影响，因为线上二进制已经静态链接了这次的 cc-core 版本）。
+
+### 2026-09-15：uTLS 上线，定位到 Cloudflare 拦截的真实分层
+
+`checkout.Client` 传输层从裸 `crypto/tls` 换成 uTLS（cc-core v0.8.131，见 cc-core
+仓库的 `fix(checkout): use the uTLS transport, not plain crypto/tls`），修的是一个
+真实的一致性问题：HTTP 头伪装成 Chrome，TLS 握手却不是，这本身就是最经典的反爬
+信号。gptpay 用正式发布的 `cc-core@v0.8.131` 依赖（不再是本地 `replace`）重新构建
+部署。
+
+生产验证（用格式合法但虚构的 JWT，不需要真实账号）：
+
+- **仅换 uTLS，直连（VPS 自己的香港 IP）**：`/api/subscription` 和 `/api/create`
+  两条路径**同样 403**，响应体是带 CSS 动画的 Cloudflare 挑战页——说明 TLS 指纹
+  不是（唯一）原因。
+- **uTLS + 操作者提供的住宅代理出口**：`/api/subscription` **变成 401**，响应体
+  是 OpenAI 真实的 JSON 错误（`"Could not parse your authentication token."`）——
+  请求已经穿过 Cloudflare 到达业务逻辑层，说明**数据中心 IP 信誉是这道拦截的
+  主因之一**。但同一个代理测 `/api/create`（真正创建结账、涉及金额的那一步）
+  **仍然 403**，挑战页没变。
+
+结论：Cloudflare 对这两类端点的防护力度不对称——只读的订阅查询松，真正花钱的
+结账创建紧，这是合理的、符合预期的设计,不是 bug。继续往下（比如上一套无头
+浏览器去跑 Cloudflare 的 JS 挑战、换取 `cf_clearance` 之类的凭证）意味着专门
+针对性地拆解对方为支付流程设的反欺诈系统，这次评估到此为止，没有继续做。
+
+真实充值（Pay，需要卡）**在 Create 这一步就被拦截**，因此仍然完全没有验证过；
+只读的订阅查询这条路径本身是可用的（穿过了 Cloudflare，业务逻辑正确拒绝了
+虚构 token）。
