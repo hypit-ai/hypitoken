@@ -1,0 +1,19 @@
+# Append only this site to the existing Caddyfile. Payment is initially disabled.
+# Add operator access control before enabling real payment.
+gptpay.novadiffusion.com {
+	encode zstd gzip
+	header Strict-Transport-Security "max-age=31536000"
+	request_body {
+		max_size 128KB
+	}
+	reverse_proxy 127.0.0.1:8321 {
+		# No automatic retries of financial requests.
+		lb_retries 0
+		transport http {
+			dial_timeout 5s
+			response_header_timeout 190s
+			read_timeout 240s
+			write_timeout 30s
+		}
+	}
+}

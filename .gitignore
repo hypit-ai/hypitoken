@@ -31,3 +31,6 @@ backups/
 # A `replace` in go.mod would do the same thing and has broken CI here before.
 go.work
 go.work.sum
+
+# Hallmark design-skill run artifacts (local tool state, not source).
+.hallmark/

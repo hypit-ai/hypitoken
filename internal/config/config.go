@@ -49,6 +49,7 @@ type EndpointsConfig struct {
 	Claude EndpointConfig `yaml:"claude"`
 	Codex  EndpointConfig `yaml:"codex"`
 	Shop   EndpointConfig `yaml:"shop"`
+	GPTPay EndpointConfig `yaml:"gptpay"`
 }
 
 type Config struct {
@@ -525,6 +526,9 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("parse config: %w", err)
 	}
 	applyDefaults(cfg, path)
+	if cfg.Endpoints.GPTPay.Port < 1 || cfg.Endpoints.GPTPay.Port > 65535 {
+		return nil, fmt.Errorf("endpoints.gptpay.port must be between 1 and 65535")
+	}
 	cfg.DefaultProxyURL = strings.TrimSpace(cfg.DefaultProxyURL)
 	if err := auth.ValidateProxyURL(cfg.DefaultProxyURL); err != nil {
 		return nil, fmt.Errorf("default_proxy_url: %w", err)
@@ -569,6 +573,15 @@ func applyDefaults(c *Config, path string) {
 	}
 	if c.Endpoints.Shop.Host == "" {
 		c.Endpoints.Shop.Host = "0.0.0.0"
+	}
+	// Public, static checkout helper. Opt-in and loopback-only by default;
+	// Caddy terminates HTTPS. Never mount admin or credential routes here.
+	if c.Endpoints.GPTPay.Port == 0 {
+		c.Endpoints.GPTPay.Port = 8321
+		c.Endpoints.GPTPay.Disabled = true
+	}
+	if c.Endpoints.GPTPay.Host == "" {
+		c.Endpoints.GPTPay.Host = "127.0.0.1"
 	}
 	if c.LogLevel == "" {
 		c.LogLevel = "info"

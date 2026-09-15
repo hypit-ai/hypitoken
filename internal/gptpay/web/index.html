@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>GPT 自动化充值小助手</title>
+  <link rel="stylesheet" href="/assets/style.css">
+  <script type="module" src="/assets/app.mjs"></script>
+</head>
+<body>
+  <main>
+    <header><h1>GPT 自动化充值小助手</h1><span class="preview" id="service-state">正在检查服务</span></header>
+    <form id="recharge" autocomplete="off" novalidate>
+      <div class="selection-row">
+        <div class="field"><label for="plan">订阅计划</label><select id="plan" name="plan" aria-describedby="plan-note"><option value="chatgptplusplan">Plus</option><option value="chatgptprolite">Pro Lite / 5x*</option><option value="chatgptpro">Pro</option><option value="chatgptgoplan">Go</option></select></div>
+        <div class="field"><label for="country">国家 / 地区</label><select id="country" name="country" required aria-describedby="country-error"><option value="">请选择</option></select><span class="error" id="country-error"></span></div>
+        <div class="field"><label for="currency">货币</label><select id="currency" name="currency"><option value="USD">USD · 美元</option></select></div>
+      </div>
+      <p id="plan-note" class="hint" hidden>5x 暂映射为 chatgptprolite，创建购买尚未实测。</p>
+      <div class="field"><label for="proxy">SOCKS5 代理（可选）</label><input id="proxy" name="proxy" type="password" maxlength="2048" placeholder="留空直连；socks5://用户名:密码@主机:端口" autocomplete="off" autocapitalize="off" spellcheck="false" aria-describedby="proxy-error"><span class="error" id="proxy-error"></span></div>
+      <div class="field"><label for="session">Session</label><textarea id="session" name="session" rows="3" placeholder="粘贴 ChatGPT Session JSON 或 accessToken" autocomplete="off" autocapitalize="off" spellcheck="false" required aria-describedby="session-error"></textarea><span class="error" id="session-error"></span></div>
+      <fieldset><legend>卡信息</legend>
+        <div class="field"><label for="card-number">卡号</label><input id="card-number" name="card-number" type="text" inputmode="numeric" maxlength="23" placeholder="1234 5678 9012 3456" autocomplete="off" required aria-describedby="card-number-error"><span class="error" id="card-number-error"></span></div>
+        <div class="card-row">
+          <div class="field"><label for="expiry">有效期</label><input id="expiry" name="expiry" type="text" inputmode="numeric" maxlength="5" placeholder="MM/YY" autocomplete="off" required aria-describedby="expiry-error"><span class="error" id="expiry-error"></span></div>
+          <div class="field"><label for="cvv">CVV</label><input id="cvv" name="cvv" type="password" inputmode="numeric" maxlength="4" placeholder="3 或 4 位" autocomplete="off" required aria-describedby="cvv-error"><span class="error" id="cvv-error"></span></div>
+        </div>
+      </fieldset>
+      <fieldset id="billing"><legend>账单信息</legend>
+        <div class="card-row">
+          <div class="field"><label for="name">持卡人姓名</label><input id="name" maxlength="254" autocomplete="name" required></div>
+          <div class="field"><label for="email">账单邮箱</label><input id="email" type="email" maxlength="254" autocomplete="email" required></div>
+        </div>
+        <div class="field"><label for="line1">账单地址</label><input id="line1" maxlength="254" autocomplete="address-line1" required></div>
+        <div class="card-row">
+          <div class="field"><label for="city">城市</label><input id="city" maxlength="254" autocomplete="address-level2" required></div>
+          <div class="field"><label for="postal_code">邮编</label><input id="postal_code" maxlength="32" autocomplete="postal-code" required></div>
+        </div>
+        <div class="field"><label for="state">州 / 省（适用时填写）</label><input id="state" maxlength="254" autocomplete="address-level1"></div>
+      </fieldset>
+      <p class="hint">确认金额后才付款。Session、卡信息和代理凭据不落盘、不记录日志。代理留空时由服务器直连；填写后全程使用该代理，失败不回退直连。</p>
+      <div id="quote" role="status" aria-live="polite" hidden></div>
+      <p id="checkout-ref" class="hint" hidden></p>
+      <div id="result" role="status" aria-live="polite"></div>
+      <div class="actions"><button id="check" type="submit" disabled>获取报价</button><button id="reset" class="secondary" type="reset">清空</button></div>
+      <button id="pay" type="button" hidden disabled>确认金额并付款</button>
+      <button id="status" type="button" class="secondary" hidden>查询支付结果</button>
+      <noscript><p class="error">请启用 JavaScript 后使用。</p></noscript>
+    </form>
+    <details id="recovery"><summary>刷新 / 中断后查询结果</summary>
+      <p class="hint">填写上方原 Session 和下方结账编号。此操作只查询，不扣款。</p>
+      <label for="recover-id">结账编号</label><input id="recover-id" autocomplete="off" placeholder="oaics_…">
+      <label for="recover-entity">收款实体</label><input id="recover-entity" autocomplete="off" value="openai_llc">
+      <button id="recover" type="button" class="secondary" disabled>恢复查询</button>
+    </details>
+    <footer>HypiToken · 与 OpenAI 无隶属关系</footer>
+  </main>
+</body>
+</html>

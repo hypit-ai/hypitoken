@@ -20,6 +20,13 @@ endpoints:
     host: "0.0.0.0"
     port: 8318
     disabled: true    # opt-in: set to false after adding Codex credentials
+  # Separate GPT checkout-helper page. No wallet/admin routes on this port.
+  # Payment additionally requires GPTPAY_* environment configuration; see docs/GPTPAY.md.
+  # Caddy: gptpay.novadiffusion.com -> 127.0.0.1:8321 (8320 is occupied in production).
+  gptpay:
+    host: "127.0.0.1"
+    port: 8321
+    disabled: true
 
 # trace | debug | info | warn | error
 log_level: info

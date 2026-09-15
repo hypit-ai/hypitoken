@@ -1,0 +1,45 @@
+[Unit]
+Description=GPTPay checkout helper
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=gptpay
+Group=gptpay
+WorkingDirectory=/var/lib/gptpay
+EnvironmentFile=/etc/gptpay/gptpay.env
+ExecStart=/opt/gptpay/current/gptpay -addr 127.0.0.1:8321
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=220
+KillSignal=SIGTERM
+UMask=0077
+StateDirectory=gptpay
+StateDirectoryMode=0700
+LimitCORE=0
+LimitNOFILE=4096
+MemoryMax=256M
+TasksMax=128
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+InaccessiblePaths=-/etc/hypitoken -/var/lib/hypitoken -/etc/hypihub -/var/lib/hypihub -/etc/cpa-claude -/var/lib/cpa-claude
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=
+SystemCallArchitectures=native
+ReadWritePaths=/var/lib/gptpay
+
+[Install]
+WantedBy=multi-user.target
