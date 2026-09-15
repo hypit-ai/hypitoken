@@ -374,3 +374,25 @@ PID 未变。GitHub Actions `ci`（build/lint-go/lint-web）在 `v0.36.154` 上�
 
 回滚：`bash /var/backups/gptpay/20260915T140007Z/rollback.sh`（只切二进制
 symlink + 重启，cc-core 侧改动已经静态链接进旧二进制，不受影响）。
+
+### 2026-09-15 22:15（Asia/Shanghai）：移除 Caddy Basic Auth，页面完全公开
+
+应用户要求移除。移除前明确提示了风险并让用户二次确认：这是这个页面**唯一**的
+访问控制，之前（2026-09-15 更早的记录）"填入免税州地址"内测按钮的安全边界写明
+"完全依赖 Caddy basic_auth……如果访问范围以后扩大，这个按钮必须先加隔离或整个
+删掉"。用户选择的是"确认移除，完全公开"——**没有**同时要求删掉 devfill 按钮，
+即明确接受了这个已写在文档里的风险。这个按钮目前仍然保留、仍未加任何隔离。
+
+操作：`/etc/caddy/Caddyfile` 备份到 `/etc/caddy/Caddyfile.bak.<timestamp>`，删除
+`gptpay.novadiffusion.com` 站点块里的 `basic_auth { operator <bcrypt> }` 三行，
+`caddy validate` 通过后 `systemctl reload caddy`。验证：`GET /` 和 `GET /healthz`
+均无需任何凭据即返回 200。仓库内 `deploy/gptpay/Caddyfile.snippet` 同步更新注释，
+反映当前"完全公开、无门禁"的真实状态，避免以后照抄这份快照时以为还有认证层。
+
+原 Basic Auth 密码从未在任何仓库/文档里留过明文（只存了 bcrypt 哈希），无法找回；
+这次操作前用户确认了不需要保留，所以没有做密码轮换或迁移动作。
+
+**当前风险状态**：`gptpay.novadiffusion.com` 现在任何人都能访问，可以贴任意
+session + 卡号发起真实扣款尝试（虽然 Create 这一步仍被 Cloudflare 拦截，见上）；
+`devfill.mjs` 的免税州地址填充按钮任何访客都能点到。如果这个状态不是长期打算，
+后续需要重新加门禁或改成别的访问控制方式。

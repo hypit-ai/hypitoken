@@ -1,5 +1,7 @@
-# Append only this site to the existing Caddyfile. Payment is initially disabled.
-# Add operator access control before enabling real payment.
+# Append only this site to the existing Caddyfile.
+# 2026-09-15: operator basic_auth was removed at the user's explicit request
+# (confirmed: full public access, no other gate in front of this listener).
+# GPTPAY_ENABLED=true; this site is reachable by anyone. See docs/GPTPAY.md.
 gptpay.novadiffusion.com {
 	encode zstd gzip
 	header Strict-Transport-Security "max-age=31536000"
