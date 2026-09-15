@@ -46,7 +46,12 @@ func TestCodexSubscriptionViewCarriesDerivedFields(t *testing.T) {
 
 	v := newCodexSubscriptionView(info, fetched)
 	if v == nil {
+		// t.Fatal exits via runtime.Goexit, not panic/os.Exit, so SA5011
+		// (staticcheck) doesn't credit it as terminating this function — an
+		// explicit return makes every v.* access below provably guarded
+		// without relying on that recognition.
 		t.Fatal("probed credential produced no view")
+		return
 	}
 	if v.Plan != "plus" {
 		t.Errorf("plan = %q, want plus", v.Plan)
@@ -82,6 +87,7 @@ func TestCodexSubscriptionViewFreeAccountNotAtRisk(t *testing.T) {
 	}, time.Now())
 	if v == nil {
 		t.Fatal("probed credential produced no view")
+		return // see the matching comment in TestCodexSubscriptionViewCarriesDerivedFields
 	}
 	if v.AtRisk {
 		t.Errorf("never-paid free account flagged at risk (%q, %v)", v.RiskReason, v.RiskDeadline)
