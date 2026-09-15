@@ -317,3 +317,60 @@ cc-core 侧的改动不受影响，因为线上二进制已经静态链接了这
 真实充值（Pay，需要卡）**在 Create 这一步就被拦截**，因此仍然完全没有验证过；
 只读的订阅查询这条路径本身是可用的（穿过了 Cloudflare，业务逻辑正确拒绝了
 虚构 token）。
+
+### 2026-09-15 22:00（Asia/Shanghai）：浏览器上下文头 + 上游错误脱敏（另一 agent 修复，本次复核后上线）
+
+这次改动由另一个 agent 在本会话之外完成，上线前做了完整代码走查（读了
+`checkout/SUBSCRIPTION_PARITY.md`/`PAYMENT_PARITY.md`、每个新增/改动文件的
+diff）、跑了 cc-core 全仓 `go build`/`go vet`/`go test -count=1`（22 个包全绿）
+以及 hypitoken 侧 `go build`/`go vet`/`go test -count=1`/`golangci-lint run`
+（用 CI 钉定的 v2.12.2，0 issues）——不是直接信任另一个 agent 的自我汇报。
+
+两块改动，范围都停在 HTTP 请求形状和错误处理层面，**没有涉及 TLS、没有解
+Cloudflare 挑战、没有回放任何会话/Cookie 身份**：
+
+- **cc-core `checkout.UpstreamError`**：`request()` 里原来三种临时拼出来的
+  错误字符串，换成带 `Operation`/`Kind`/`Status` 的类型化错误，`Kind` 只从
+  状态码推断，唯一例外是 `challenge`——必须看到显式的 `Cf-Mitigated: challenge`
+  响应头才判定，不会仅凭 HTML 正文就猜是 Cloudflare 挑战（这纠正了我之前
+  `newHTTPClient` 文档注释里"确认是纯 TLS 导致"这个过度断言，改成更诚实的
+  "无法仅凭此确定原因"）。2xx 状态码带这个响应头也算失败（挑战偶尔会包在
+  200 里）。`checkout.Client.Subscription` 现在把 `FetchCodexSubscriptionWithClient`
+  的原始错误在返回前脱敏成纯状态码摘要——修的是我自己之前那版的一个真实信息泄露口子：
+  之前是原样 `return nil, err`，生产测试时看到的 403 HTML 正文会原样透传到
+  gptpay 的公开 API 上。
+- **cc-core `auth.SubscriptionBrowserContext`**：`FetchCodexSubscriptionWithClient`
+  新增可选变长参数，仅当调用方传入浏览器上下文（gptpay 的只读订阅探针）时才
+  在 `accounts/check` 请求上补一组来自真实抓包（`crack/chatgpt-checkout/rows/199`，
+  Chrome 148/macOS）的头（`User-Agent`/`Sec-Ch-Ua-*`/`Oai-Language`/`Priority`）
+  和访客真实浏览器时区（`timezone_offset_min` 查询参数），并跳过 payment-methods
+  查询（这条路径本来就不回传卡信息）。**明确不重放**任何 Cookie、
+  `Oai-Device-Id`、`Oai-Session-Id，或抓包里那条敏感 Referer（携带另一笔订单的
+  client secret）——`TestSubscriptionBrowserCapture199` 直接断言这些字段为空。
+  管理面板走的既有凭据池路径不传这个参数，行为完全不变。
+- gptpay `subscriptionSummary` 相应扩到 `ActiveStart`/`BillingPeriod`/
+  `BillingCurrency`/`PaymentChannel` + `HasActiveKnown`/`PreviouslyPaidKnown`/
+  `WillRenewKnown`/`Partial`，修的是一个真实数据丢失 bug：`Portal` 为 `nil`
+  （这次抓包证据显示这其实是**常见情况**，不是边缘 case）时，`Entitlement`/
+  `LastActive` 本来带着的账单数据此前被整段静默丢弃，现在标记为"未获取"而不是
+  直接报告 `false`/免费。
+
+cc-core 发布 `v0.8.132`；hypitoken 侧撤掉本地 `replace`，`go get
+github.com/wjsoj/cc-core@v0.8.132`（走 `GOPROXY=direct` 绕过 sumdb 索引延迟，
+和上次 `v0.8.131` 一样的操作），`go mod tidy`。
+
+发布目录：`/opt/gptpay/releases/20260915T140007Z`；上一版本
+`20260915T124838Z`。二进制 SHA-256：
+`0c240d3c53c0584ddf278c729aeacdc5dfc90079a75c1f2c340460d70668365f`。
+
+验收：两仓库全部测试/vet/lint 全绿；线上 `systemctl is-active gptpay` =
+`active`，`/healthz` 仍 `{"enabled":true,...}`；`hypitoken`/`cpa-claude`
+PID 未变。GitHub Actions `ci`（build/lint-go/lint-web）在 `v0.36.154` 上全绿。
+**本次未做进一步的线上真实凭据探测**——操作者的 Basic Auth 密码不在这次会话
+上下文里，且没有必要为了验证一次纯头部/错误处理改动去反复触碰真实订阅接口。
+
+真实付款（Create/Pay）依旧完全没有解除 Cloudflare 拦截，这次改动完全没有
+触碰那条路径——不是这次的目标，也不打算做。
+
+回滚：`bash /var/backups/gptpay/20260915T140007Z/rollback.sh`（只切二进制
+symlink + 重启，cc-core 侧改动已经静态链接进旧二进制，不受影响）。
