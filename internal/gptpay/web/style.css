@@ -39,7 +39,11 @@ input:disabled, select:disabled, textarea:disabled { cursor: not-allowed; opacit
 #result { font-size: var(--text-sm); color: var(--color-accent); }
 #result:empty { display: none; }
 #result[data-error="true"] { color: var(--color-error); }
-#quote { padding: var(--space-sm); border: 1px solid var(--color-input-rule); border-radius: var(--radius-sm); overflow-wrap: anywhere; }
+#quote, #account-status { padding: var(--space-sm); border: 1px solid var(--color-input-rule); border-radius: var(--radius-sm); overflow-wrap: anywhere; }
+#account-status[data-error="true"] { border-color: var(--color-error); color: var(--color-error); }
+#account-status dl { display: grid; grid-template-columns: auto 1fr; gap: var(--space-2xs) var(--space-sm); margin: 0; }
+#account-status dt { color: var(--color-muted); }
+#account-status dd { margin: 0; }
 #checkout-ref { overflow-wrap: anywhere; user-select: all; }
 #recovery { margin-top: var(--space-md); }
 #recovery input, #recovery button { margin-bottom: var(--space-sm); }

@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/wjsoj/cc-core/auth"
 	"github.com/wjsoj/cc-core/checkout"
 )
 
@@ -23,6 +24,7 @@ type backend interface {
 	Quote(context.Context, checkout.Auth, checkout.Session, checkout.Selection, checkout.Billing) (checkout.Quote, error)
 	Pay(context.Context, checkout.Auth, checkout.Quote, checkout.Card, *checkout.Ledger) (checkout.PaymentResult, error)
 	Status(context.Context, checkout.Auth, checkout.Session) (checkout.Snapshot, error)
+	Subscription(context.Context, checkout.Auth) (*auth.CodexSubscriptionInfo, error)
 }
 type flow struct {
 	mu        sync.Mutex
@@ -91,7 +93,7 @@ func (s *Service) serve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch r.URL.Path {
-	case "/api/create", "/api/quote", "/api/pay", "/api/status", "/api/recover":
+	case "/api/create", "/api/quote", "/api/pay", "/api/status", "/api/recover", "/api/subscription":
 	default:
 		http.NotFound(w, r)
 		return
@@ -164,6 +166,28 @@ func (s *Service) serve(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, 200, statusView(snap))
+		return
+	}
+	if r.URL.Path == "/api/subscription" {
+		// Read-only, no flow — a visitor should see this before committing to
+		// creating a checkout session at all, so it cannot depend on one.
+		p, err := pinProxy(ctx, req.Proxy, net.DefaultResolver.LookupNetIP)
+		if err != nil {
+			fail(w, 400, err.Error())
+			return
+		}
+		client, closeClient, err := s.client(p)
+		if err != nil {
+			fail(w, 400, err.Error())
+			return
+		}
+		defer closeClient()
+		info, err := client.Subscription(ctx, auth)
+		if err != nil {
+			fail(w, 502, err.Error())
+			return
+		}
+		writeJSON(w, 200, subscriptionView(info))
 		return
 	}
 	if r.URL.Path == "/api/create" {
@@ -289,6 +313,54 @@ func (s *Service) serve(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, statusView(snap))
 	}
 }
+// subscriptionSummary is deliberately a subset of auth.CodexSubscriptionInfo:
+// has-ever-paid / has-active / plan / renewal / delinquency answer exactly
+// what an operator checking a session before spending a real card needs to
+// see. PaymentMethods (card brand + last four) is never forwarded — nothing
+// here asked for "which card is on file", and echoing it back to the visitor
+// who just supplied the session only widens what this page exposes for no
+// requested benefit.
+type subscriptionSummary struct {
+	HasPreviouslyPaid bool   `json:"has_previously_paid"`
+	HasActive         bool   `json:"has_active"`
+	Plan              string `json:"plan,omitempty"`
+	PlanNormalized    string `json:"plan_normalized"`
+	WillRenew         bool   `json:"will_renew"`
+	IsDelinquent      bool   `json:"is_delinquent"`
+	ActiveUntil       int64  `json:"active_until,omitempty"`
+}
+
+func subscriptionView(info *auth.CodexSubscriptionInfo) subscriptionSummary {
+	v := subscriptionSummary{}
+	if info == nil {
+		return v
+	}
+	if info.Account != nil {
+		v.HasPreviouslyPaid = info.Account.HasPreviouslyPaidSubscription
+	}
+	if info.Entitlement != nil {
+		v.HasActive = info.Entitlement.HasActiveSubscription
+		v.IsDelinquent = info.Entitlement.IsDelinquent
+	}
+	// Same precedence FetchCodexSubscription itself uses to backfill a stored
+	// credential's PlanType — kept identical so "the plan" means one thing
+	// everywhere in this codebase, not a second opinion gptpay invented.
+	if info.Portal != nil && info.Portal.PlanType != "" {
+		v.Plan = info.Portal.PlanType
+	} else if info.Account != nil && info.Account.PlanType != "" {
+		v.Plan = info.Account.PlanType
+	}
+	v.PlanNormalized = auth.NormalizeCodexPlan(v.Plan)
+	if info.Portal != nil {
+		v.WillRenew = info.Portal.WillRenew
+		v.IsDelinquent = v.IsDelinquent || info.Portal.IsDelinquent
+		if !info.Portal.ActiveUntil.IsZero() {
+			v.ActiveUntil = info.Portal.ActiveUntil.Unix()
+		}
+	}
+	return v
+}
+
 func statusView(s checkout.Snapshot) checkout.PaymentResult {
 	state := "pending"
 	if s.Paid() {

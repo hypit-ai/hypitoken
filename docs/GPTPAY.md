@@ -250,3 +250,42 @@ bash /var/backups/gptpay/20260915T091800Z/rollback.sh
   的 import 语句与内容一致；`healthz` 仍 `enabled:true`；`hypitoken`/
   `cpa-claude` 的 PID 未变。
 - 回滚：`bash /var/backups/gptpay/20260915T114854Z/rollback.sh`。
+
+### 2026-09-15：Session 输入后先查账单状态
+
+新接口 `/api/subscription`（`session`、`proxy`；无需先创建结账）：曾经是否付费过、
+当前是否有效订阅、档位、是否自动续费、是否欠费、到期/续费时间。只读，不创建
+任何东西，走和 `/api/status`/`/api/recover` 一样的限流窗口。**不回传付款方式**
+（卡品牌/后四位）——没人要这个，多传只会扩大暴露面。
+
+复用管理面板"哪张卡付这个 Codex 订阅"功能背后已经跑了很久的探针
+（`chatgpt.com/backend-api/subscriptions` + `accounts/check`），而不是重新实现一遍：
+
+- cc-core `auth` 包：把 `(*Auth).FetchCodexSubscription` 中间那段"两次 GET
+  + 合并"逻辑抽成新导出函数 `FetchCodexSubscriptionWithClient(ctx, client, token,
+  accountID)`，不依赖凭据池（不需要刷新令牌、不需要健康状态）。原方法改成薄封装，
+  管理面板功能行为完全不变。`codexSubscriptionsURL`/`codexAccountsCheckURL`
+  从 `const` 改成包内 `var`，只是为了让测试能指向本地 httptest server。新增两个
+  端到端测试锁定合并逻辑（正常合并 / 单端点失败不影响另一端）。
+- cc-core `checkout` 包（新文件 `subscription.go`）：`(*Client).Subscription(ctx,
+  Auth)` 内部复用 `c.http`——走的是访客指定的那条网络路径（同一个 SOCKS5
+  代理/直连），不会绕开已有的代理钉定和 DNS 重绑定防护另起一条。
+- gptpay：`backend` 接口加 `Subscription` 方法；`subscriptionView()` 只挑
+  `has_previously_paid`/`has_active`/`plan`/`plan_normalized`/`will_renew`/
+  `is_delinquent`/`active_until` 这几个字段回传，`PaymentMethods` 全程不转发。
+  前端 Session 框下面加"检查账户状态"按钮 + 结果面板（`<dl>`），编辑 Session
+  或代理会让上一次的检查结果失效隐藏。**不做输入自动触发**——每改一个字符就打
+  一次上游没必要，也可能撞限流。
+
+发布目录：`/opt/gptpay/releases/20260915T120612Z`；上一版本 `20260915T114854Z`。
+二进制 SHA-256：`b132bcd1c761231e7a5f94c23362ed68a4b5fc8acc0a4902d3152724f1442c7e`。
+
+验收：cc-core 全仓 `go test ./...`（22 个包）、gptpay `go vet`/`go test -race`/
+`node --test` 全绿；线上用格式非法的 session 打 `/api/subscription` 得 400，
+用格式合法但虚构的 JWT 打得 502（两个上游端点都正确拒绝，错误如实透传，不是
+404/500）；`hypitoken`/`cpa-claude` PID 未变，`healthz` 仍 `enabled:true`。
+**未用真实账号验证过实际返回的订阅数据是否正确**——这一步需要真实 Session，
+留给操作者在页面上用自己的账号测。
+
+回滚：`bash /var/backups/gptpay/20260915T120612Z/rollback.sh`（只换二进制，
+cc-core 侧的改动不受影响，因为线上二进制已经静态链接了这次的 cc-core 版本）。

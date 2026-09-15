@@ -3,6 +3,7 @@ package gptpay
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -10,12 +11,15 @@ import (
 	"testing"
 	"time"
 
+	"github.com/wjsoj/cc-core/auth"
 	"github.com/wjsoj/cc-core/checkout"
 )
 
 type fakeBackend struct {
-	creates, pays int
-	state         string
+	creates, pays, subscriptions int
+	state                        string
+	subscriptionInfo             *auth.CodexSubscriptionInfo
+	subscriptionErr              error
 }
 
 func (b *fakeBackend) Create(_ context.Context, _ checkout.Auth, _ checkout.Selection) (checkout.Session, error) {
@@ -34,6 +38,19 @@ func (b *fakeBackend) Status(_ context.Context, _ checkout.Auth, _ checkout.Sess
 		return checkout.Snapshot{Status: "complete", PaymentStatus: "paid"}, nil
 	}
 	return checkout.Snapshot{Status: "open", PaymentStatus: "unpaid"}, nil
+}
+func (b *fakeBackend) Subscription(_ context.Context, _ checkout.Auth) (*auth.CodexSubscriptionInfo, error) {
+	b.subscriptions++
+	if b.subscriptionErr != nil {
+		return nil, b.subscriptionErr
+	}
+	if b.subscriptionInfo != nil {
+		return b.subscriptionInfo, nil
+	}
+	return &auth.CodexSubscriptionInfo{
+		Account:     &auth.CodexBillingAccount{PlanType: "plus", HasPreviouslyPaidSubscription: true},
+		Entitlement: &auth.CodexEntitlement{HasActiveSubscription: true, SubscriptionPlan: "chatgptplusplan"},
+	}, nil
 }
 func newTestService(t *testing.T) (*Service, *fakeBackend) {
 	t.Helper()
@@ -106,6 +123,43 @@ func TestAPIFlowAndConfirmation(t *testing.T) {
 	code, _ = call(t, h, "/api/status", req, s.origin)
 	if code != 403 {
 		t.Fatal("cross-owner access")
+	}
+}
+
+// TestSubscriptionCheck covers the read-only probe: it needs no flow (must
+// work before /api/create is ever called), returns the redacted summary
+// shape, and must never forward payment methods to the caller.
+func TestSubscriptionCheck(t *testing.T) {
+	s, b := newTestService(t)
+	h := NewHandler(s)
+	code, out := call(t, h, "/api/subscription", requestFixture(), s.origin)
+	if code != 200 || b.subscriptions != 1 {
+		t.Fatalf("subscription %d %v (calls=%d)", code, out, b.subscriptions)
+	}
+	if out["has_previously_paid"] != true || out["has_active"] != true {
+		t.Fatalf("summary fields missing: %v", out)
+	}
+	if out["plan"] != "plus" || out["plan_normalized"] != "plus" {
+		t.Fatalf("plan not surfaced: %v", out)
+	}
+	if _, leaked := out["payment_methods"]; leaked {
+		t.Fatal("payment methods must never be forwarded to the caller")
+	}
+	if _, leaked := out["portal"]; leaked {
+		t.Fatal("must not forward the raw upstream envelope, only the summary")
+	}
+
+	// An upstream probe failure surfaces as 502, exactly like /api/status.
+	b.subscriptionErr = errors.New("upstream unavailable")
+	code, _ = call(t, h, "/api/subscription", requestFixture(), s.origin)
+	if code != 502 {
+		t.Fatalf("probe failure should be 502, got %d", code)
+	}
+
+	// Preview build (no backend configured) must refuse like every other path.
+	code, _ = call(t, NewHandler(), "/api/subscription", requestFixture(), s.origin)
+	if code != 503 {
+		t.Fatal("preview build made subscription check available")
 	}
 }
 func TestAPIRejectsUnsafeRequests(t *testing.T) {

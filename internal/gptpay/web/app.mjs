@@ -20,6 +20,7 @@ function controls() {
   $('pay').hidden = !quoted || attempted; $('pay').disabled = !enabled || busy || attempted;
   $('status').hidden = !flow; $('status').disabled = busy;
   $('reset').disabled = busy; $('recover').disabled = !enabled || busy;
+  $('check-account').disabled = !enabled || busy || attempted;
   for (const id of [...fields, ...billingFields]) $(id).disabled = busy || (attempted && id !== 'session');
 }
 function errors(pay = false) {
@@ -53,7 +54,12 @@ function amount(q) {
 function invalidate() {
   if (!attempted) { quoted = null; $('quote').hidden = true; }
   $('service-state').textContent = !enabled ? '服务未启用 · 不会扣款' : $('proxy').value.trim() ? '使用所填代理 · 确认后付款' : '服务器直连 · 确认后付款';
-  $('plan-note').hidden = $('plan').value !== 'chatgptprolite'; controls();
+  $('plan-note').hidden = $('plan').value !== 'chatgptprolite';
+  // A changed Session or proxy invalidates whatever account-status we last
+  // showed — it described a different login state (or a different network
+  // path for the same one), not this one.
+  $('account-status').hidden = true;
+  controls();
 }
 for (const id of [...fields, ...billingFields]) $(id).addEventListener('input', () => {
   if (['plan', 'country', 'currency', 'proxy', 'session'].includes(id) && !attempted) { flow = ''; $('checkout-ref').hidden = true; }
@@ -115,6 +121,31 @@ $('pay').addEventListener('click', async () => {
   if (poll) timer = setTimeout(() => checkStatus(9), 3000);
 });
 $('status').addEventListener('click', () => { clearTimeout(timer); checkStatus(); });
+const PLAN_LABELS = { free: '免费', plus: 'Plus', pro: 'Pro', team: 'Team / Go' };
+function renderAccountStatus(sub) {
+  const status = $('account-status');
+  status.replaceChildren();
+  const dl = document.createElement('dl');
+  const row = (term, value) => { const dt = document.createElement('dt'); dt.textContent = term; const dd = document.createElement('dd'); dd.textContent = value; dl.append(dt, dd); };
+  row('曾经付费', sub.has_previously_paid ? '是' : '否');
+  row('当前订阅', sub.has_active ? `有效 · ${PLAN_LABELS[sub.plan_normalized] || sub.plan_normalized || '未知档位'}` : '无');
+  if (sub.has_active) row('自动续费', sub.will_renew ? '是' : '否');
+  if (sub.is_delinquent) row('欠费状态', '⚠ 欠费中，续费可能失败');
+  if (sub.active_until) row('到期 / 续费时间', new Date(sub.active_until * 1000).toLocaleString('zh-CN'));
+  status.append(dl);
+  status.dataset.error = 'false';
+  status.hidden = false;
+}
+$('check-account').addEventListener('click', async () => {
+  if (busy || attempted) return;
+  if (!validSession($('session').value)) { message('请先填写有效的 Session。', true); $('session').focus(); return; }
+  busy = true; controls(); $('account-status').hidden = true;
+  try {
+    renderAccountStatus(await api('subscription', {}));
+  } catch (e) {
+    $('account-status').textContent = e.message; $('account-status').dataset.error = 'true'; $('account-status').hidden = false;
+  } finally { busy = false; controls(); }
+});
 $('recover').addEventListener('click', async () => {
   if (busy || !enabled) return;
   if (!validSession($('session').value)) { message('请在上方填写原 Session。', true); $('session').focus(); return; }

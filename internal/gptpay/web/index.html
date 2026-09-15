@@ -20,6 +20,8 @@
       <p id="plan-note" class="hint" hidden>5x 暂映射为 chatgptprolite，创建购买尚未实测。</p>
       <div class="field"><label for="proxy">SOCKS5 代理（可选）</label><input id="proxy" name="proxy" type="password" maxlength="2048" placeholder="留空直连；socks5://用户名:密码@主机:端口" autocomplete="off" autocapitalize="off" spellcheck="false" aria-describedby="proxy-error"><span class="error" id="proxy-error"></span></div>
       <div class="field"><label for="session">Session</label><textarea id="session" name="session" rows="3" placeholder="粘贴 ChatGPT Session JSON 或 accessToken" autocomplete="off" autocapitalize="off" spellcheck="false" required aria-describedby="session-error"></textarea><span class="error" id="session-error"></span></div>
+      <div class="actions"><button id="check-account" type="button" class="secondary" disabled>检查账户状态</button></div>
+      <div id="account-status" role="status" aria-live="polite" hidden></div>
       <fieldset><legend>卡信息</legend>
         <div class="field"><label for="card-number">卡号</label><input id="card-number" name="card-number" type="text" inputmode="numeric" maxlength="23" placeholder="1234 5678 9012 3456" autocomplete="off" required aria-describedby="card-number-error"><span class="error" id="card-number-error"></span></div>
         <div class="card-row">
