@@ -121,17 +121,23 @@ $('pay').addEventListener('click', async () => {
   if (poll) timer = setTimeout(() => checkStatus(9), 3000);
 });
 $('status').addEventListener('click', () => { clearTimeout(timer); checkStatus(); });
-const PLAN_LABELS = { free: '免费', plus: 'Plus', pro: 'Pro', team: 'Team / Go' };
+const PLAN_LABELS = { free: '免费', plus: 'Plus', pro: 'Pro', team: 'Team', go: 'Go' };
 function renderAccountStatus(sub) {
   const status = $('account-status');
   status.replaceChildren();
   const dl = document.createElement('dl');
   const row = (term, value) => { const dt = document.createElement('dt'); dt.textContent = term; const dd = document.createElement('dd'); dd.textContent = value; dl.append(dt, dd); };
-  row('曾经付费', sub.has_previously_paid ? '是' : '否');
-  row('当前订阅', sub.has_active ? `有效 · ${PLAN_LABELS[sub.plan_normalized] || sub.plan_normalized || '未知档位'}` : '无');
-  if (sub.has_active) row('自动续费', sub.will_renew ? '是' : '否');
+  row('曾经付费', sub.previously_paid_known === false ? '未获取' : sub.has_previously_paid ? '是' : '否');
+  row('当前套餐', PLAN_LABELS[sub.plan_normalized] || sub.plan || '未获取');
+  row('当前订阅', sub.has_active_known === false ? '未获取' : sub.has_active ? '有效' : '无');
+  row('自动续费', sub.will_renew_known === false ? '未获取' : sub.will_renew ? '是' : '否');
+  row('订阅开始', sub.active_start ? new Date(sub.active_start * 1000).toLocaleString('zh-CN') : '未获取');
+  row('计费周期', ({ monthly: '月付', annual: '年付', yearly: '年付' })[sub.billing_period] || sub.billing_period || '未获取');
+  row('计费币种', sub.billing_currency?.toUpperCase() || '未获取');
+  row('支付渠道', ({ chatgpt_web: '网页', ios: 'iOS', android: 'Android', stripe: 'Stripe', chatgpt_not_purchased: '未购买' })[sub.payment_channel] || sub.payment_channel || '未获取');
   if (sub.is_delinquent) row('欠费状态', '⚠ 欠费中，续费可能失败');
   if (sub.active_until) row('到期 / 续费时间', new Date(sub.active_until * 1000).toLocaleString('zh-CN'));
+  if (sub.partial) row('查询完整性', '部分接口未返回数据；未获取不等于没有订阅');
   status.append(dl);
   status.dataset.error = 'false';
   status.hidden = false;
@@ -141,7 +147,7 @@ $('check-account').addEventListener('click', async () => {
   if (!validSession($('session').value)) { message('请先填写有效的 Session。', true); $('session').focus(); return; }
   busy = true; controls(); $('account-status').hidden = true;
   try {
-    renderAccountStatus(await api('subscription', {}));
+    renderAccountStatus(await api('subscription', { timezone_offset_min: new Date().getTimezoneOffset() }));
   } catch (e) {
     $('account-status').textContent = e.message; $('account-status').dataset.error = 'true'; $('account-status').hidden = false;
   } finally { busy = false; controls(); }

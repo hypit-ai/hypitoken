@@ -75,16 +75,17 @@ func fail(w http.ResponseWriter, status int, message string) {
 }
 
 type apiRequest struct {
-	Proxy     string             `json:"proxy"`
-	Session   string             `json:"session"`
-	Flow      string             `json:"flow"`
-	Selection checkout.Selection `json:"selection"`
-	Billing   checkout.Billing   `json:"billing"`
-	Card      checkout.Card      `json:"card"`
-	Amount    int64              `json:"amount_minor"`
-	Currency  string             `json:"currency"`
-	Confirm   bool               `json:"confirm"`
-	Checkout  checkout.Session   `json:"checkout"`
+	TimezoneOffsetMinutes int                `json:"timezone_offset_min,omitempty"`
+	Proxy                 string             `json:"proxy"`
+	Session               string             `json:"session"`
+	Flow                  string             `json:"flow"`
+	Selection             checkout.Selection `json:"selection"`
+	Billing               checkout.Billing   `json:"billing"`
+	Card                  checkout.Card      `json:"card"`
+	Amount                int64              `json:"amount_minor"`
+	Currency              string             `json:"currency"`
+	Confirm               bool               `json:"confirm"`
+	Checkout              checkout.Session   `json:"checkout"`
 }
 
 func (s *Service) serve(w http.ResponseWriter, r *http.Request) {
@@ -169,6 +170,11 @@ func (s *Service) serve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.URL.Path == "/api/subscription" {
+		if req.TimezoneOffsetMinutes < -840 || req.TimezoneOffsetMinutes > 840 {
+			fail(w, 400, "浏览器时区参数无效")
+			return
+		}
+		auth.TimezoneOffsetMinutes = req.TimezoneOffsetMinutes
 		// Read-only, no flow — a visitor should see this before committing to
 		// creating a checkout session at all, so it cannot depend on one.
 		p, err := pinProxy(ctx, req.Proxy, net.DefaultResolver.LookupNetIP)
@@ -322,26 +328,51 @@ func (s *Service) serve(w http.ResponseWriter, r *http.Request) {
 // who just supplied the session only widens what this page exposes for no
 // requested benefit.
 type subscriptionSummary struct {
-	HasPreviouslyPaid bool   `json:"has_previously_paid"`
-	HasActive         bool   `json:"has_active"`
-	Plan              string `json:"plan,omitempty"`
-	PlanNormalized    string `json:"plan_normalized"`
-	WillRenew         bool   `json:"will_renew"`
-	IsDelinquent      bool   `json:"is_delinquent"`
-	ActiveUntil       int64  `json:"active_until,omitempty"`
+	HasPreviouslyPaid   bool   `json:"has_previously_paid"`
+	HasActive           bool   `json:"has_active"`
+	Plan                string `json:"plan,omitempty"`
+	PlanNormalized      string `json:"plan_normalized"`
+	WillRenew           bool   `json:"will_renew"`
+	IsDelinquent        bool   `json:"is_delinquent"`
+	ActiveUntil         int64  `json:"active_until,omitempty"`
+	ActiveStart         int64  `json:"active_start,omitempty"`
+	BillingPeriod       string `json:"billing_period,omitempty"`
+	BillingCurrency     string `json:"billing_currency,omitempty"`
+	PaymentChannel      string `json:"payment_channel,omitempty"`
+	HasActiveKnown      bool   `json:"has_active_known"`
+	PreviouslyPaidKnown bool   `json:"previously_paid_known"`
+	WillRenewKnown      bool   `json:"will_renew_known"`
+	Partial             bool   `json:"partial"`
 }
 
 func subscriptionView(info *auth.CodexSubscriptionInfo) subscriptionSummary {
 	v := subscriptionSummary{}
 	if info == nil {
+		v.Partial = true
 		return v
 	}
+	v.Partial = info.Portal == nil || info.Account == nil || info.Entitlement == nil
 	if info.Account != nil {
 		v.HasPreviouslyPaid = info.Account.HasPreviouslyPaidSubscription
+		v.PreviouslyPaidKnown = true
 	}
 	if info.Entitlement != nil {
 		v.HasActive = info.Entitlement.HasActiveSubscription
+		v.HasActiveKnown = true
 		v.IsDelinquent = info.Entitlement.IsDelinquent
+		v.BillingPeriod = info.Entitlement.BillingPeriod
+		v.BillingCurrency = info.Entitlement.BillingCurrency
+		for _, at := range []*time.Time{info.Entitlement.ExpiresAt, info.Entitlement.CancelsAt, info.Entitlement.RenewsAt} {
+			if at != nil && !at.IsZero() {
+				v.ActiveUntil = at.Unix()
+				break
+			}
+		}
+	}
+	if info.LastActive != nil {
+		v.WillRenew = info.LastActive.WillRenew
+		v.WillRenewKnown = true
+		v.PaymentChannel = info.LastActive.PurchaseOriginPlatform
 	}
 	// Same precedence FetchCodexSubscription itself uses to backfill a stored
 	// credential's PlanType — kept identical so "the plan" means one thing
@@ -351,9 +382,24 @@ func subscriptionView(info *auth.CodexSubscriptionInfo) subscriptionSummary {
 	} else if info.Account != nil && info.Account.PlanType != "" {
 		v.Plan = info.Account.PlanType
 	}
-	v.PlanNormalized = auth.NormalizeCodexPlan(v.Plan)
+	if v.Plan != "" {
+		v.PlanNormalized = auth.NormalizeCodexPlan(v.Plan)
+	}
 	if info.Portal != nil {
 		v.WillRenew = info.Portal.WillRenew
+		v.WillRenewKnown = true
+		if !info.Portal.ActiveStart.IsZero() {
+			v.ActiveStart = info.Portal.ActiveStart.Unix()
+		}
+		if info.Portal.BillingPeriod != "" {
+			v.BillingPeriod = info.Portal.BillingPeriod
+		}
+		if info.Portal.BillingCurrency != "" {
+			v.BillingCurrency = info.Portal.BillingCurrency
+		}
+		if v.PaymentChannel == "" && info.Portal.IsProcessorStripe {
+			v.PaymentChannel = "stripe"
+		}
 		v.IsDelinquent = v.IsDelinquent || info.Portal.IsDelinquent
 		if !info.Portal.ActiveUntil.IsZero() {
 			v.ActiveUntil = info.Portal.ActiveUntil.Unix()

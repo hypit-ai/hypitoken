@@ -20,6 +20,7 @@ type fakeBackend struct {
 	state                        string
 	subscriptionInfo             *auth.CodexSubscriptionInfo
 	subscriptionErr              error
+	subscriptionTimezone         int
 }
 
 func (b *fakeBackend) Create(_ context.Context, _ checkout.Auth, _ checkout.Selection) (checkout.Session, error) {
@@ -39,8 +40,9 @@ func (b *fakeBackend) Status(_ context.Context, _ checkout.Auth, _ checkout.Sess
 	}
 	return checkout.Snapshot{Status: "open", PaymentStatus: "unpaid"}, nil
 }
-func (b *fakeBackend) Subscription(_ context.Context, _ checkout.Auth) (*auth.CodexSubscriptionInfo, error) {
+func (b *fakeBackend) Subscription(_ context.Context, a checkout.Auth) (*auth.CodexSubscriptionInfo, error) {
 	b.subscriptions++
+	b.subscriptionTimezone = a.TimezoneOffsetMinutes
 	if b.subscriptionErr != nil {
 		return nil, b.subscriptionErr
 	}
@@ -160,6 +162,43 @@ func TestSubscriptionCheck(t *testing.T) {
 	code, _ = call(t, NewHandler(), "/api/subscription", requestFixture(), s.origin)
 	if code != 503 {
 		t.Fatal("preview build made subscription check available")
+	}
+}
+
+func TestSubscriptionBrowserTimezone(t *testing.T) {
+	s, b := newTestService(t)
+	req := requestFixture()
+	req.TimezoneOffsetMinutes = -480
+	code, _ := call(t, NewHandler(s), "/api/subscription", req, s.origin)
+	if code != 200 || b.subscriptionTimezone != -480 {
+		t.Fatal("timezone not passed to client")
+	}
+	req.TimezoneOffsetMinutes = 900
+	code, _ = call(t, NewHandler(s), "/api/subscription", req, s.origin)
+	if code != 400 || b.subscriptions != 1 {
+		t.Fatal("invalid timezone reached upstream")
+	}
+}
+
+func TestSubscriptionSummaryRetainsAccountsCheckBilling(t *testing.T) {
+	at := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
+	v := subscriptionView(&auth.CodexSubscriptionInfo{
+		Account:     &auth.CodexBillingAccount{PlanType: "plus", HasPreviouslyPaidSubscription: true},
+		Entitlement: &auth.CodexEntitlement{HasActiveSubscription: true, RenewsAt: &at, BillingCurrency: "USD", BillingPeriod: "monthly"},
+		LastActive:  &auth.CodexLastActiveSubscription{WillRenew: true, PurchaseOriginPlatform: "chatgpt_web"},
+	})
+	if !v.HasActiveKnown || !v.HasActive || !v.WillRenewKnown || !v.WillRenew || v.ActiveUntil != at.Unix() || v.BillingCurrency != "USD" || v.BillingPeriod != "monthly" || v.PaymentChannel != "chatgpt_web" || !v.Partial {
+		t.Fatalf("accounts/check fields lost: %+v", v)
+	}
+	if v.ActiveStart != 0 {
+		t.Fatal("must not infer purchase date from renewal date")
+	}
+	p := subscriptionView(&auth.CodexSubscriptionInfo{Portal: &auth.CodexSubscriptionPortal{PlanType: "plus", ActiveUntil: at}})
+	if p.HasActiveKnown || p.PreviouslyPaidKnown {
+		t.Fatal("missing data reported as known false")
+	}
+	if subscriptionView(nil).PlanNormalized != "" {
+		t.Fatal("unknown data reported as free plan")
 	}
 }
 func TestAPIRejectsUnsafeRequests(t *testing.T) {
