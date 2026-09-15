@@ -1,4 +1,5 @@
 import { COUNTRIES, CURRENCIES, validate, validSession } from './validation.mjs';
+import { installDevFill } from './devfill.mjs';
 
 const $ = id => document.getElementById(id);
 const form = $('recharge'), result = $('result');
@@ -137,3 +138,4 @@ try {
   $('service-state').textContent = enabled ? '服务器直连 · 确认后付款' : '服务未启用 · 不会扣款';
 } catch { $('service-state').textContent = '服务不可用 · 不会扣款'; }
 controls();
+installDevFill();

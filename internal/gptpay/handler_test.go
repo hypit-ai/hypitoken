@@ -9,7 +9,7 @@ import (
 
 func TestAssetsAndSecurity(t *testing.T) {
 	h := NewHandler()
-	for _, path := range []string{"/", "/healthz", "/assets/style.css", "/assets/tokens.css", "/assets/app.mjs", "/assets/validation.mjs", "/assets/bricolage.woff2", "/assets/jetbrains.woff2"} {
+	for _, path := range []string{"/", "/healthz", "/assets/style.css", "/assets/tokens.css", "/assets/app.mjs", "/assets/devfill.mjs", "/assets/validation.mjs", "/assets/bricolage.woff2", "/assets/jetbrains.woff2"} {
 		t.Run(path, func(t *testing.T) {
 			w := httptest.NewRecorder()
 			h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, path, nil))

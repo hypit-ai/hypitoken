@@ -218,3 +218,35 @@ bash /var/backups/gptpay/20260915T091800Z/rollback.sh
 
 脚本仅在 Caddyfile 仍与此次发布一致时恢复原配置并停用 GPTPay；若有后续改动会拒绝覆盖。
 二进制、配置、运行用户与支付记录均保留，不删除业务数据。
+
+### 2026-09-15：内部测试填充按钮（修复路由 404）+ 上线
+
+- 账单信息栏新增“填入免税州地址”按钮（`internal/gptpay/web/devfill.mjs`，
+  `installDevFill()`）：随机从 5 个免税州（AK/DE/MT/NH/OR，均为真实地址）
+  中选一个填入姓名/邮箱/地址/城市/邮编/州，同时把 `plan`/`country`/
+  `currency` 重置为 `chatgptplusplan`/`US`/`USD`。**明确定位为内部测试
+  专用，不做任何隔离**——不带 `sample` 标记，不经过任何后端拒绝逻辑，
+  填完之后走的是和真人输入完全一样的真实提交路径。这与此前
+  （2026-09-15 更早的记录）移除的“测试资料模拟”功能不同：那个功能有
+  `sample:true` + 后端 `isSampleRequest` 拒绝，绝不会碰到真实支付接口；
+  这个没有。安全边界完全依赖 `gptpay.novadiffusion.com` 上的 Caddy
+  `basic_auth`（用户名 `operator`）——密码只给了操作者，此功能默认视为
+  仅操作者可见。**如果这个页面的访问范围以后扩大，这个按钮必须先加隔离
+  或整个删掉。**
+- 修复：新增此按钮的改动最初漏掉了 `internal/gptpay/handler.go` 的资源
+  路由白名单条目，导致 `GET /assets/devfill.mjs` 404，而 `app.mjs`
+  顶部对它的静态 `import` 一旦 404 会让整个 ES 模块加载失败——不只是这个
+  按钮不出现，是**整个页面**（国家/货币下拉框、`/api/config` 探测、所有
+  按钮的事件绑定）都不会初始化。补上白名单条目后验证 200，模块链可正常
+  解析。同时把 `/assets/devfill.mjs` 加进了 `handler_test.go` 的资源
+  清单测试，往后再出现“加了 JS 模块但忘记注册路由”这类问题会被
+  `go test` 直接抓到，不用等人工复查。
+- 发布目录：`/opt/gptpay/releases/20260915T114854Z`；上一版本
+  `20260915T110021Z`。二进制 SHA-256：
+  `12f5885eddf06e6fb09ff2ae26c555d203d119b8931ec173f20ee75fbfe91a81`。
+- 验收：`go vet`/`go test -race`（含新增的 devfill 路由测试）/
+  `node --test`（含新增的 `devfill_test.mjs`，校验 5 个免税州地址无重复、
+  邮编/州代码格式正确）全绿。线上 `/assets/devfill.mjs` 200，`app.mjs`
+  的 import 语句与内容一致；`healthz` 仍 `enabled:true`；`hypitoken`/
+  `cpa-claude` 的 PID 未变。
+- 回滚：`bash /var/backups/gptpay/20260915T114854Z/rollback.sh`。

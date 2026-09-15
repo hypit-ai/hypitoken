@@ -25,6 +25,7 @@ func NewHandler(services ...*Service) http.Handler {
 		"/assets/style.css":       {"style.css", "text/css; charset=utf-8"},
 		"/assets/tokens.css":      {"tokens.css", "text/css; charset=utf-8"},
 		"/assets/app.mjs":         {"app.mjs", "text/javascript; charset=utf-8"},
+		"/assets/devfill.mjs":     {"devfill.mjs", "text/javascript; charset=utf-8"},
 		"/assets/validation.mjs":  {"validation.mjs", "text/javascript; charset=utf-8"},
 		"/assets/bricolage.woff2": {"fonts/bricolage.woff2", "font/woff2"},
 		"/assets/jetbrains.woff2": {"fonts/jetbrains.woff2", "font/woff2"},
