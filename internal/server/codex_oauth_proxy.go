@@ -434,6 +434,17 @@ func (s *Server) doForwardCodexOAuth(c *gin.Context, a *auth.Auth, path string, 
 			// Nothing reached the client yet, so this turn can still be rescued
 			// on another credential without the caller ever knowing.
 			_ = resp.Body.Close()
+			if isClientDisconnect(ctx, rerr) {
+				a.MarkClientCancel("client canceled before first event")
+				s.emitLog(requestlog.Record{
+					Client: clientName, ClientToken: maskClientToken(clientToken), Provider: auth.ProviderOpenAI,
+					AuthID: a.ID, AuthLabel: a.Label, AuthKind: "oauth", Model: model,
+					Stream: stream, Path: path, Status: 499, Attempts: attempts,
+					DurationMs: time.Since(start).Milliseconds(),
+					Error:      "client canceled before first event",
+				})
+				return false, true
+			}
 			if res.shed != "" {
 				// Upstream shed this turn for capacity/quota inside an
 				// otherwise-200 stream. Credential health is deliberately NOT
@@ -492,17 +503,6 @@ func (s *Server) doForwardCodexOAuth(c *gin.Context, a *auth.Auth, path string, 
 					Error:       shedPreOutputLabel,
 				})
 				return true, false
-			}
-			if isClientDisconnect(ctx, rerr) {
-				a.MarkClientCancel("client canceled before first event")
-				s.emitLog(requestlog.Record{
-					Client: clientName, ClientToken: maskClientToken(clientToken), Provider: auth.ProviderOpenAI,
-					AuthID: a.ID, AuthLabel: a.Label, AuthKind: "oauth", Model: model,
-					Stream: stream, Path: path, Status: 499, Attempts: attempts,
-					DurationMs: time.Since(start).Milliseconds(),
-					Error:      "client canceled before first event",
-				})
-				return false, true
 			}
 			// A turn on a REUSED socket that produced no frame at all is the
 			// signature cc-core's Lease.Reused exists to name: the backend
@@ -591,13 +591,13 @@ func (s *Server) doForwardCodexOAuth(c *gin.Context, a *auth.Auth, path string, 
 		// shed landed on the client while the streaming relay was quietly
 		// failing them over. All of them were capacity sheds: same model, ~2.3s,
 		// the shape of a turn upstream refused rather than one it botched.
-		if aggShed != "" {
+		if aggShed != "" && !isClientDisconnect(ctx, aerr) {
 			log.Warnf("codex oauth: %s shed the non-streaming request (attempt %d, %s): %s — retrying on another credential",
 				a.ID, attempts, time.Since(start).Round(time.Millisecond), aggShed)
 			_ = resp.Body.Close()
 			return true, false
 		}
-		if aerr != nil {
+		if aerr != nil || isClientDisconnect(ctx, aerr) {
 			// A client that hung up mid-aggregation surfaces here as the same
 			// read error an upstream fault would — but there is nobody left to
 			// retry for. Rotating anyway burns a credential per attempt on a
@@ -753,7 +753,7 @@ func aggregateCodexResponseStream(r io.Reader, counts *usage.Counts) (out []byte
 					// (the response is assembled first, sent second), so a shed
 					// is fully recoverable on another credential; report it and
 					// let the caller fail over.
-					if codexerr.Classify(payload) == codexerr.ClassRetryable {
+					if codexerr.Classify(payload) == codexerr.ClassRetryable || codexTransientError(payload) {
 						return nil, truncate(payload, 200), nil
 					}
 					var ev struct {
@@ -1045,6 +1045,20 @@ var codexCapacityShedCodes = map[string]bool{
 	"slow_down":            true,
 }
 
+// codexTransientError identifies upstream failures that may succeed on another
+// credential. cc-core's closed retry allowlist classifies these as fatal, but
+// forwarding them before any output commits the response and prevents routing
+// retries. Only callers that have not emitted output may retry them; malformed
+// requests and unknown error codes retain the shared classifier's behavior.
+func codexTransientError(payload []byte) bool {
+	switch codexErrorFrameCode(payload) {
+	case "server_error", "stream_terminated":
+		return true
+	default:
+		return false
+	}
+}
+
 // codexStreamResult reports the outcome of a Codex backend SSE relay so the
 // caller can choose between a transparent retry (nothing reached the client
 // yet) and a logged give-up (bytes already committed downstream — from that
@@ -1274,6 +1288,13 @@ func streamSSECodexBackend(c *gin.Context, resp *http.Response, counts *usage.Co
 							out.upstreamModel = m
 						}
 
+						if !sentAny && codexTransientError(payload) {
+							out.shed = truncate(payload, codexShedPreviewBytes)
+							out.shedCode = codexErrorFrameCode(payload)
+							// The error already ends this attempt. Do not wait for
+							// a terminal frame or EOF from a stalled upstream.
+							return nil, false, io.EOF
+						}
 						if codexerr.Classify(payload) == codexerr.ClassRetryable {
 							if !sentAny {
 								// Failover is still possible — withhold this

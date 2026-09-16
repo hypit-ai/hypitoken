@@ -94,6 +94,11 @@ func streamCodexAsChatCompletions(c *gin.Context, upstream io.Reader, counts *us
 						// identical to the native /v1/responses path.
 						counts.Add(extractCodexBackendUsageFromJSON(payload))
 
+						if !sentAny && codexTransientError(payload) {
+							out.shed = truncate(payload, codexShedPreviewBytes)
+							out.shedCode = codexErrorFrameCode(payload)
+							return nil, false, io.EOF
+						}
 						if !shedding && codexerr.Classify(payload) == codexerr.ClassRetryable {
 							// pending is provably empty here: the loop only
 							// reaches readLine once it has drained it, so a
