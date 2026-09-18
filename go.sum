@@ -125,6 +125,8 @@ github.com/wjsoj/cc-core v0.8.132 h1:7KSXCHSib6zagYjsdXIm+icEEFrz3s6D4zTJBNIIPjI
 github.com/wjsoj/cc-core v0.8.132/go.mod h1:oEF2jGT1jZL0zTH7pZ0sOd8ckqhXKZ2hF4tBPujgSU8=
 github.com/wjsoj/cc-core v0.8.133 h1:2mxaSjsrnPaVT3wnQFmZwaWDgs1WOf7uM/oaKP30KzI=
 github.com/wjsoj/cc-core v0.8.133/go.mod h1:oEF2jGT1jZL0zTH7pZ0sOd8ckqhXKZ2hF4tBPujgSU8=
+github.com/wjsoj/cc-core v0.8.134 h1:ClDJVgY4Ttr5G8VFd6KmGa6OTWdD+CHEDjCm9BdINC0=
+github.com/wjsoj/cc-core v0.8.134/go.mod h1:oEF2jGT1jZL0zTH7pZ0sOd8ckqhXKZ2hF4tBPujgSU8=
 github.com/xyproto/randomstring v1.0.5 h1:YtlWPoRdgMu3NZtP45drfy1GKoojuR7hmRcnhZqKjWU=
 github.com/xyproto/randomstring v1.0.5/go.mod h1:rgmS5DeNXLivK7YprL0pY+lTuhNQW3iGxZ18UQApw/E=
 go.mongodb.org/mongo-driver/v2 v2.5.0 h1:yXUhImUjjAInNcpTcAlPHiT7bIXhshCTL3jVBkF3xaE=
