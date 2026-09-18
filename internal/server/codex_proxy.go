@@ -18,6 +18,7 @@ import (
 	"github.com/wjsoj/cc-core/apicompat"
 	"github.com/wjsoj/cc-core/auth"
 	"github.com/wjsoj/cc-core/codexerr"
+	"github.com/wjsoj/cc-core/codeximage"
 	"github.com/wjsoj/cc-core/downstream"
 	"github.com/wjsoj/cc-core/mimicry"
 	"github.com/wjsoj/cc-core/pricing"
@@ -43,6 +44,16 @@ func (s *Server) handleCodexChatCompletions(c *gin.Context) {
 
 func (s *Server) handleCodexResponses(c *gin.Context) {
 	s.forward(c, auth.ProviderOpenAI, "/v1/responses")
+}
+
+// handleCodexImagesGenerations and handleCodexImagesEdits serve the OpenAI
+// Images API; see codex_images.go.
+func (s *Server) handleCodexImagesGenerations(c *gin.Context) {
+	s.forward(c, auth.ProviderOpenAI, codeximage.GenerationsPath)
+}
+
+func (s *Server) handleCodexImagesEdits(c *gin.Context) {
+	s.forward(c, auth.ProviderOpenAI, codeximage.EditsPath)
 }
 
 // handleCodexResponsesCompact forwards the Codex CLI's conversation-compaction
@@ -293,6 +304,10 @@ func (s *Server) fetchCodexAPIKeyModels(ctx context.Context, a *auth.Auth) ([]co
 // delegated to doForwardCodexOAuth (codex_oauth_proxy.go), a full
 // implementation that forwards to the ChatGPT Codex backend.
 func (s *Server) doForwardCodex(c *gin.Context, a *auth.Auth, path string, body []byte, stream bool, model, clientToken, clientName, slotID string, start time.Time, attempts int) (retry, done bool) {
+	// Ahead of the JSON validation below: an images edit arrives as multipart.
+	if codeximage.IsPath(path) {
+		return s.doForwardCodexImages(c, a, path, body, model, clientToken, clientName, slotID, start, attempts)
+	}
 	// Validate before map-based sanitizers or model rewrites can collapse
 	// duplicate keys and make the outbound tier ambiguous.
 	validatedBody, _, validationErr := servicetier.NormalizeRequest(body)
@@ -1102,10 +1117,11 @@ func extractOpenAIUsageFromJSON(body []byte) usage.Counts {
 	if u == nil {
 		u = wrap.Response.Usage
 	}
-	if u == nil {
-		return usage.Counts{}
+	var c usage.Counts
+	if u != nil {
+		c = u.toCounts()
 	}
-	return u.toCounts()
+	return usage.WithResponsesImageGen(c, body)
 }
 
 type openaiUsage struct {
@@ -1166,6 +1182,11 @@ func mergeCodexUsage(dst *usage.Counts, u usage.Counts) {
 	}
 	if u.ReasoningTokens > 0 {
 		dst.ReasoningTokens = u.ReasoningTokens
+	}
+	if u.HasImageGen() {
+		dst.ImageGenTextInputTokens = u.ImageGenTextInputTokens
+		dst.ImageGenImageInputTokens = u.ImageGenImageInputTokens
+		dst.ImageGenOutputTokens = u.ImageGenOutputTokens
 	}
 	if u.Requests > 0 && dst.Requests == 0 {
 		dst.Requests = 1

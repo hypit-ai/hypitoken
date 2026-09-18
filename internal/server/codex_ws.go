@@ -590,7 +590,12 @@ func codexTurnDelta(cur, billed usage.Counts) usage.Counts {
 		OutputTokens:      cur.OutputTokens - billed.OutputTokens,
 		CacheCreateTokens: cur.CacheCreateTokens - billed.CacheCreateTokens,
 		CacheReadTokens:   cur.CacheReadTokens - billed.CacheReadTokens,
-		Requests:          1,
+		// Image tokens are their own billing axis; leaving them out of the
+		// delta would settle every WS turn's images at $0.
+		ImageGenTextInputTokens:  cur.ImageGenTextInputTokens - billed.ImageGenTextInputTokens,
+		ImageGenImageInputTokens: cur.ImageGenImageInputTokens - billed.ImageGenImageInputTokens,
+		ImageGenOutputTokens:     cur.ImageGenOutputTokens - billed.ImageGenOutputTokens,
+		Requests:                 1,
 	}
 }
 

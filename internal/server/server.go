@@ -360,6 +360,8 @@ func (s *Server) buildCodexEngine(adminH *admin.Handler, primary bool) *gin.Engi
 		v1.POST("/responses", s.handleCodexResponses)
 		v1.POST("/responses/compact", s.handleCodexResponsesCompact)
 		v1.POST("/responses/input_tokens", s.handleCodexInputTokens)
+		v1.POST("/images/generations", s.handleCodexImagesGenerations)
+		v1.POST("/images/edits", s.handleCodexImagesEdits)
 		v1.GET("/models", s.handleCodexModels)
 		// WebSocket ingress for /v1/responses (real codex-tui transport). Opt-in;
 		// a GET with Upgrade: websocket. The POST path above is unaffected.

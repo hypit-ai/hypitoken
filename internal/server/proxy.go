@@ -19,6 +19,7 @@ import (
 
 	"github.com/wjsoj/cc-core/advisor"
 	"github.com/wjsoj/cc-core/auth"
+	"github.com/wjsoj/cc-core/codeximage"
 	"github.com/wjsoj/cc-core/downstream"
 	"github.com/wjsoj/cc-core/mimicry"
 	"github.com/wjsoj/cc-core/relay"
@@ -93,6 +94,12 @@ func (s *Server) forward(c *gin.Context, provider, path string) {
 	if model == "" {
 		model = "unknown"
 	}
+	isImages := auth.NormalizeProvider(provider) == auth.ProviderOpenAI && codeximage.IsPath(path)
+	if isImages {
+		// JSON or multipart; validated against the image catalog downstream,
+		// not the chat-model guard below, which knows no image model.
+		model, peek.Stream = codeximage.Peek(body, c.GetHeader("Content-Type"))
+	}
 
 	// Refuse a Codex model no credential can serve, here, rather than letting
 	// the failover loop discover it. Upstream does not reject an unrecognised
@@ -100,7 +107,7 @@ func (s *Server) forward(c *gin.Context, provider, path string) {
 	// request burns the stall budget on credential after credential and answers
 	// 503 minutes later without ever naming what was wrong. See
 	// codex_model_guard.go.
-	if auth.NormalizeProvider(provider) == auth.ProviderOpenAI {
+	if auth.NormalizeProvider(provider) == auth.ProviderOpenAI && !isImages {
 		route := s.guardCodexModel(model)
 		if route.reject != nil {
 			writeAPIError(c, provider, APIError{
