@@ -19,7 +19,6 @@ import (
 
 	"github.com/wjsoj/CPA-Claude/internal/admin"
 	"github.com/wjsoj/CPA-Claude/internal/config"
-	"github.com/wjsoj/CPA-Claude/internal/gptpay"
 	"github.com/wjsoj/CPA-Claude/internal/logging"
 	"github.com/wjsoj/CPA-Claude/internal/saas"
 	saasadapter "github.com/wjsoj/CPA-Claude/internal/saas/adapter"
@@ -556,15 +555,6 @@ func main() {
 			_ = shopDB.Close()
 		})
 		log.Infof("shop: enabled at %s (site=%q stripe currency=%s webhook=%t)", addr, cfg.Shop.SiteName, shopGw.Currency(), shopGw.HasWebhookSecret())
-	}
-
-	// A separate listener with no SaaS, admin, credential or payment routes.
-	if ep := cfg.Endpoints.GPTPay; ep.IsEnabled() {
-		paymentService, paymentErr := gptpay.ServiceFromEnv()
-		if paymentErr != nil {
-			log.Fatalf("GPTPay: %v", paymentErr)
-		}
-		s.AttachExtraEndpoint("gptpay", net.JoinHostPort(ep.Host, fmt.Sprint(ep.Port)), gptpay.NewHandler(paymentService))
 	}
 
 	for _, ep := range s.Endpoints() {
