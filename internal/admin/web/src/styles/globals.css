@@ -444,3 +444,32 @@ html:not(.dark) .page-canvas {
 @media (prefers-reduced-motion: reduce) {
   .admin-orb { animation: none; }
 }
+
+/* Signed-in console density. Root-scoped tokens also reach Radix portals;
+   public pages keep their own type scale after the shell is unmounted. */
+html:has([data-console-shell]) {
+  --text-xs: 0.875rem;
+  --text-xs--line-height: 1.5;
+  --text-sm: 1rem;
+  --text-sm--line-height: 1.5;
+  --text-base: 1.0625rem;
+  --text-base--line-height: 1.6;
+}
+
+[data-console-shell] .eyebrow {
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  letter-spacing: 0.1em;
+}
+
+/* Older console widgets use literal pixel sizes for metadata. Keep these
+   readable alongside the shared scale without inflating display headings. */
+[data-console-shell] :is(.text-\[9px\], .text-\[10px\], .text-\[11px\]) {
+  font-size: 0.8125rem;
+  line-height: 1.5;
+}
+
+[data-console-shell] .text-\[12px\] {
+  font-size: 0.875rem;
+  line-height: 1.5;
+}

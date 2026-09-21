@@ -382,7 +382,7 @@ export default function ConsolePage() {
               request / token tiles that used to sit here published our daily
               call volume to every signed-in customer; magnitudes are gone from
               this tab entirely, shapes only (see dashboard-board.tsx). */}
-          <RevealStagger className="grid gap-3 grid-cols-1 sm:max-w-xs">
+          <RevealStagger className="grid gap-5 grid-cols-1 sm:max-w-xs">
             <RevealItem className="flex">
               <HealthCell health={health} />
             </RevealItem>
@@ -463,7 +463,7 @@ function PersonalView({ personal }: { personal: PersonalConsole | null }) {
   return (
     <>
       {/* KPI strip — wallet balance + today's traffic + all-time tokens. */}
-      <RevealStagger className="grid gap-3 grid-cols-2 sm:grid-cols-3 lg:grid-cols-5">
+      <RevealStagger className="grid gap-5 grid-cols-2 sm:grid-cols-3 xl:grid-cols-5">
         <RevealItem className="flex">
           <MetricCell
             label={t("console.metrics.balance")}
@@ -499,7 +499,7 @@ function PersonalView({ personal }: { personal: PersonalConsole | null }) {
 
       {/* Cumulative all-time summary. */}
       <Reveal>
-        <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+        <div className="grid grid-cols-2 gap-5 lg:grid-cols-4">
           <MetricCell label={t("console.personal.totalRequests")} value={fmtCompact(total.count)} />
           <MetricCell
             label={t("console.personal.totalSpent")}
@@ -513,8 +513,8 @@ function PersonalView({ personal }: { personal: PersonalConsole | null }) {
 
       {/* Charts row — usage trend (wide) + token composition + cache gauge. */}
       <Reveal>
-        <div className="grid gap-3 lg:grid-cols-4">
-          <SpotlightCard tiltDeg={0} className="rounded-xl p-5 lg:col-span-2">
+        <div className="grid gap-5 xl:grid-cols-4">
+          <SpotlightCard tiltDeg={0} className="rounded-xl p-5 sm:p-6 xl:col-span-2">
             <h3 className="text-sm font-semibold tracking-tight">{t("console.personal.trend")}</h3>
             <p className="mt-0.5 text-xs text-muted-foreground">
               {t("console.personal.trendSub", { n: TREND_DAYS })}
@@ -523,7 +523,7 @@ function PersonalView({ personal }: { personal: PersonalConsole | null }) {
               <UsageTrend days={days} />
             </div>
           </SpotlightCard>
-          <SpotlightCard tiltDeg={0} className="rounded-xl p-5">
+          <SpotlightCard tiltDeg={0} className="rounded-xl p-5 sm:p-6">
             <h3 className="text-sm font-semibold tracking-tight">
               {t("console.personal.tokenComposition")}
             </h3>
@@ -536,7 +536,7 @@ function PersonalView({ personal }: { personal: PersonalConsole | null }) {
               />
             </div>
           </SpotlightCard>
-          <SpotlightCard tiltDeg={0} className="rounded-xl p-5">
+          <SpotlightCard tiltDeg={0} className="rounded-xl p-5 sm:p-6">
             <h3 className="text-sm font-semibold tracking-tight">
               {t("console.personal.cacheHit")}
             </h3>
@@ -547,7 +547,7 @@ function PersonalView({ personal }: { personal: PersonalConsole | null }) {
 
       {/* Per-model usage — horizontal bars scaled by token total. */}
       <Reveal>
-        <SpotlightCard tiltDeg={0} className="rounded-xl p-5">
+        <SpotlightCard tiltDeg={0} className="rounded-xl p-5 sm:p-6">
           <h3 className="text-sm font-semibold tracking-tight">{t("console.personal.byModel")}</h3>
           <ModelBars items={modelPoints} />
         </SpotlightCard>
@@ -555,7 +555,7 @@ function PersonalView({ personal }: { personal: PersonalConsole | null }) {
 
       {/* Daily breakdown table. */}
       <Reveal>
-        <SpotlightCard tiltDeg={0} className="rounded-xl p-5">
+        <SpotlightCard tiltDeg={0} className="rounded-xl p-5 sm:p-6">
           <h3 className="text-sm font-semibold tracking-tight">{t("console.personal.daily")}</h3>
           <DailyTable rows={days} />
         </SpotlightCard>
