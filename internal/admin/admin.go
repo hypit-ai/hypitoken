@@ -346,21 +346,22 @@ func (h *Handler) adminAuth() gin.HandlerFunc {
 // ---- responses ----
 
 type authRow struct {
-	ID            string     `json:"id"`
-	Kind          string     `json:"kind"`
-	Provider      string     `json:"provider"` // "anthropic" | "openai"
-	PlanType      string     `json:"plan_type,omitempty"`
-	Label         string     `json:"label"`
-	Email         string     `json:"email,omitempty"`
-	ProxyURL      string     `json:"proxy_url"`
-	BaseURL       string     `json:"base_url,omitempty"`
-	Group         string     `json:"group,omitempty"`
-	MaxConcurrent int        `json:"max_concurrent"`
-	ActiveClients int        `json:"active_clients"`
-	ClientTokens  []string   `json:"client_tokens"`
-	Disabled      bool       `json:"disabled"`
-	QuotaExceeded bool       `json:"quota_exceeded"`
-	QuotaResetAt  *time.Time `json:"quota_reset_at,omitempty"`
+	ExplicitFailuresOnly bool       `json:"explicit_failures_only"`
+	ID                   string     `json:"id"`
+	Kind                 string     `json:"kind"`
+	Provider             string     `json:"provider"` // "anthropic" | "openai"
+	PlanType             string     `json:"plan_type,omitempty"`
+	Label                string     `json:"label"`
+	Email                string     `json:"email,omitempty"`
+	ProxyURL             string     `json:"proxy_url"`
+	BaseURL              string     `json:"base_url,omitempty"`
+	Group                string     `json:"group,omitempty"`
+	MaxConcurrent        int        `json:"max_concurrent"`
+	ActiveClients        int        `json:"active_clients"`
+	ClientTokens         []string   `json:"client_tokens"`
+	Disabled             bool       `json:"disabled"`
+	QuotaExceeded        bool       `json:"quota_exceeded"`
+	QuotaResetAt         *time.Time `json:"quota_reset_at,omitempty"`
 	// Quarantine is the API-key circuit breaker: a channel that failed
 	// repeatedly is paused for a self-expiring, exponentially growing
 	// interval so traffic rotates onto a working key. Surfaced so the panel
@@ -607,6 +608,7 @@ func (h *Handler) buildAuthRows() []authRow {
 			QuotaResetAt:           timePtr(st.Auth.QuotaResetAt),
 			QuarantinedUntil:       timePtr(st.Auth.QuarantineUntil),
 			QuarantineStrikes:      st.Auth.QuarantineStrikes,
+			ExplicitFailuresOnly:   st.Auth.ExplicitFailuresOnly,
 			ExpiresAt:              timePtr(st.Auth.ExpiresAt),
 			FileBacked:             strings.TrimSpace(st.Auth.FilePath) != "",
 			Healthy:                healthy,
@@ -816,14 +818,15 @@ func (h *Handler) resolveClientTokenLabels(tokens []string) []string {
 }
 
 type patchAuthBody struct {
-	Disabled      *bool              `json:"disabled"`
-	MaxConcurrent *int               `json:"max_concurrent"`
-	ProxyURL      *string            `json:"proxy_url"`
-	BaseURL       *string            `json:"base_url"`
-	APIKey        *string            `json:"api_key"`
-	Label         *string            `json:"label"`
-	Group         *string            `json:"group"`
-	ModelMap      *map[string]string `json:"model_map"`
+	ExplicitFailuresOnly *bool              `json:"explicit_failures_only"`
+	Disabled             *bool              `json:"disabled"`
+	MaxConcurrent        *int               `json:"max_concurrent"`
+	ProxyURL             *string            `json:"proxy_url"`
+	BaseURL              *string            `json:"base_url"`
+	APIKey               *string            `json:"api_key"`
+	Label                *string            `json:"label"`
+	Group                *string            `json:"group"`
+	ModelMap             *map[string]string `json:"model_map"`
 }
 
 func (h *Handler) handlePatchAuth(c *gin.Context) {
@@ -862,6 +865,13 @@ func (h *Handler) handlePatchAuth(c *gin.Context) {
 			c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "invalid proxy_url: " + err.Error()})
 			return
 		}
+	}
+	if body.ExplicitFailuresOnly != nil {
+		if a.Kind != auth.KindAPIKey {
+			c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "explicit_failures_only is API-key-only"})
+			return
+		}
+		a.SetExplicitFailuresOnly(*body.ExplicitFailuresOnly)
 	}
 	if body.Disabled != nil {
 		a.SetDisabled(*body.Disabled)
