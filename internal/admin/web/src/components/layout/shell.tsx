@@ -64,7 +64,7 @@ function SideNavLink({
       to={to}
       end={end}
       className={cn(
-        "relative flex items-center gap-3 rounded-lg px-4 py-3 text-sm transition-colors",
+        "relative flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm transition-colors",
         active ? "font-medium text-primary" : "text-muted-foreground hover:text-foreground",
       )}
     >
@@ -94,7 +94,7 @@ export function AppShell() {
   // Single prompt-enabled instance: only the shell may raise the entry toast.
   const { unread } = useTicketUnread({ prompt: true });
   return (
-    <div data-console-shell className="relative min-h-dvh bg-background text-base text-foreground">
+    <div className="relative min-h-dvh bg-background text-foreground">
       {/* faint ambient gradient mesh — frames the whole app without competing
           with content. Fixed so it stays put while the page scrolls. */}
       <div
@@ -107,9 +107,9 @@ export function AppShell() {
         }}
       />
       <Header unread={unread} />
-      <div className="mx-auto flex max-w-[90rem] gap-8 px-4 py-8 md:px-8 lg:gap-10 lg:py-12">
-        <aside className="hidden w-60 flex-shrink-0 lg:block">
-          <nav className="sticky top-24 flex flex-col gap-2">
+      <div className="mx-auto flex max-w-7xl gap-6 px-4 py-6 md:px-6 lg:py-10">
+        <aside className="hidden w-56 flex-shrink-0 lg:block">
+          <nav className="sticky top-24 flex flex-col gap-1">
             {NAV_ITEMS.map((n) => (
               <SideNavLink
                 key={n.to}
@@ -183,7 +183,7 @@ function Header({ unread }: { unread: number }) {
   const { t } = useTranslation();
   return (
     <div className="sticky top-0 z-40 px-4 pt-3 md:px-6">
-      <header className="glass mx-auto flex max-w-[90rem] items-center justify-between gap-4 rounded-full px-3 py-2 md:px-4">
+      <header className="glass mx-auto flex max-w-7xl items-center justify-between gap-4 rounded-full px-3 py-2 md:px-4">
         <div className="flex items-center gap-5">
           <Link
             to="/app"
