@@ -17,9 +17,8 @@ import (
 
 // codex_chat_bridge.go is the transport half of the /v1/chat/completions bridge
 // for Codex OAuth credentials. The protocol translation itself lives in
-// cc-core's apicompat package — CPA-Claude has the same gap and cc-core already
-// owns Codex request shaping (mimicry.SanitizeCodexRequestBody), so the mapping
-// belongs there and only the gin/SSE plumbing stays here.
+// cc-core's apicompat package, shared with CPA-Claude. Request preparation lives
+// in cc-core/codexoauth; only the gin/SSE plumbing stays here.
 
 // streamCodexAsChatCompletions relays the backend's Responses SSE stream to the
 // client as a chat.completion.chunk stream. Keepalive, write serialization,
@@ -37,23 +36,11 @@ import (
 // Committing lazily is what lets a pre-output shed be withheld and failed over,
 // exactly as on the native path; pass a closure that writes the SSE headers.
 //
-// A shed needs handling here more than anywhere else, because the translation
-// erases it. apicompat.Translate has no case for {"type":"error"} — the frame
-// produces no chat frames at all — and the response.failed that follows renders
-// as an ordinary finish frame with finish_reason "stop". Left alone, a shed
-// therefore reaches the client as a well-formed, successful-looking, EMPTY
-// completion: the model appears to have returned nothing and stopped normally,
-// with no error, no retry signal, and (since the relay does see a terminal
-// event) no failover and no record anywhere. That is strictly worse than the
-// native path, where the CLI at least sees the code and backs off.
+// Retryable failures before output stay invisible so the caller can fail over.
+// After output starts, the shared converter emits an error envelope and [DONE].
 func streamCodexAsChatCompletions(c *gin.Context, upstream io.Reader, counts *usage.Counts, model string, includeUsage bool, commit func()) codexStreamResult {
 	flusher, _ := c.Writer.(http.Flusher)
 	reader := newLineReader(upstream)
-	// chat/completions never rides the WebSocket egress (see eligible()), so
-	// this resolves to a no-op today. Kept correct rather than deleted: the
-	// relay is shared, and a no-op that silently stops matching the native path
-	// is how the first DisarmStall wiring shipped doing nothing at all.
-	relaxStall := codexStallRelaxer(upstream, codexDefaultCommittedStall)
 	st := apicompat.NewStreamState(model, includeUsage, time.Now().Unix())
 	var out codexStreamResult
 
@@ -78,7 +65,6 @@ func streamCodexAsChatCompletions(c *gin.Context, upstream io.Reader, counts *us
 					out.firstOutputAt = time.Now()
 					// Same reason as the native relay: the failover the stall
 					// budget protects ends at the first committed byte.
-					relaxStall()
 				}
 				sentAny = true
 				return frame, apicompat.IsDoneFrame(frame), nil
@@ -92,7 +78,7 @@ func streamCodexAsChatCompletions(c *gin.Context, upstream io.Reader, counts *us
 						// Usage and classification are read off the raw upstream
 						// event, not the translated frames, so billing stays
 						// identical to the native /v1/responses path.
-						counts.Add(extractCodexBackendUsageFromJSON(payload))
+						mergeCodexUsage(counts, extractCodexBackendUsageFromJSON(payload))
 
 						if !sentAny && codexTransientError(payload) {
 							out.shed = truncate(payload, codexShedPreviewBytes)
@@ -107,18 +93,16 @@ func streamCodexAsChatCompletions(c *gin.Context, upstream io.Reader, counts *us
 								shedding = true
 								out.shed = truncate(payload, 200)
 							} else {
-								// Output has already started, so there is no
-								// failover left. Demotion — the fallback the
-								// native paths use — buys nothing here either:
-								// the code never reaches the client in the first
-								// place, since Translate drops error frames. All
-								// that can be done is say it happened.
+								// The converter forwards this failure; record it as a shed too.
 								out.demoted.shed = true
 								_, isCapacity := codexerr.DemoteCapacityCode(payload)
 								out.demoted.capacity = isCapacity
 							}
 						}
 						if !shedding {
+							if failure := apicompat.ResponseFailure(payload); failure != nil {
+								out.failure = failure
+							}
 							frames, _ := st.Translate(payload)
 							pending = append(pending, frames...)
 						}

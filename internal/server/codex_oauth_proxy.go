@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"sort"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -20,6 +19,7 @@ import (
 	"github.com/wjsoj/cc-core/auth"
 	"github.com/wjsoj/cc-core/codexerr"
 	"github.com/wjsoj/cc-core/codeximage"
+	"github.com/wjsoj/cc-core/codexoauth"
 	"github.com/wjsoj/cc-core/codexws"
 	"github.com/wjsoj/cc-core/downstream"
 	"github.com/wjsoj/cc-core/mimicry"
@@ -86,33 +86,13 @@ func (s *Server) doForwardCodexOAuth(c *gin.Context, a *auth.Auth, path string, 
 	if ab := strings.TrimRight(snap.BaseURL, "/"); ab != "" {
 		baseURL = ab
 	}
-	// A bridged chat request is a Responses request from here on: same backend
-	// route, same sanitizer, same fingerprint.
-	upstreamPath := path
-	if isChat {
-		upstreamPath = "/v1/responses"
-	}
-	upURL := baseURL + mimicry.CodexOAuthPath(upstreamPath)
-
-	sourceBody := body
-	if isChat {
-		converted, cerr := apicompat.ChatCompletionsToResponses(body)
-		if cerr != nil {
-			// A body we can't translate is a client-shape problem, not a
-			// credential problem — but an API-key credential forwards
-			// chat/completions verbatim and may well accept it, so roll back to
-			// the loop instead of failing the request here.
-			log.Infof("codex oauth: chat/completions bridge declined body via %s: %v — deferring to API-key path", a.ID, cerr)
-			return true, false
-		}
-		sourceBody = converted
-	}
-
-	upstreamBody, _, err := mimicry.SanitizeCodexRequestBody(sourceBody, upstreamPath)
+	prepared, err := codexoauth.PrepareCodexRequest(body, path)
 	if err != nil {
-		log.Warnf("codex oauth: body sanitize failed via %s: %v", a.ID, err)
-		upstreamBody = sourceBody
+		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": gin.H{"type": "invalid_request_error", "message": err.Error()}})
+		return false, true
 	}
+	upURL := baseURL + mimicry.CodexOAuthPath(prepared.Path)
+	upstreamBody := prepared.Body
 
 	normalizedBody, outboundTier, tierErr := servicetier.NormalizeRequest(upstreamBody)
 	if tierErr != nil {
@@ -415,6 +395,11 @@ func (s *Server) doForwardCodexOAuth(c *gin.Context, a *auth.Auth, path string, 
 		}
 		sawTerminal, wroteAny, rerr = res.sawTerminal, res.wroteAny, res.err
 		upstreamModel = res.upstreamModel
+		if res.failure != nil {
+			streamErr = res.failure.Error()
+			logStatus = http.StatusBadGateway
+			counts.Errors++
+		}
 		firstOutputAt = res.firstOutputAt
 		// A shed that landed after output started could not be withheld. Say so
 		// either way: on the native route the CLI quietly retries, on the chat
@@ -629,6 +614,19 @@ func (s *Server) doForwardCodexOAuth(c *gin.Context, a *auth.Auth, path string, 
 			return true, false
 		}
 		if aerr != nil || isClientDisconnect(ctx, aerr) {
+			var responseFailure *apicompat.ResponseError
+			if !isClientDisconnect(ctx, aerr) && errors.As(aerr, &responseFailure) {
+				_ = resp.Body.Close()
+				c.AbortWithStatusJSON(http.StatusBadGateway, gin.H{"error": responseFailure})
+				s.emitLog(requestlog.Record{
+					Client: clientName, ClientToken: maskClientToken(clientToken), Provider: auth.ProviderOpenAI,
+					AuthID: a.ID, AuthLabel: a.Label, AuthKind: "oauth", Model: model,
+					Stream: stream, Path: path, Status: http.StatusBadGateway, Attempts: attempts,
+					DurationMs: time.Since(start).Milliseconds(), Error: responseFailure.Error(),
+				})
+				return false, true
+			}
+
 			// A client that hung up mid-aggregation surfaces here as the same
 			// read error an upstream fault would — but there is nobody left to
 			// retry for. Rotating anyway burns a credential per attempt on a
@@ -745,17 +743,11 @@ func (s *Server) doForwardCodexOAuth(c *gin.Context, a *auth.Auth, path string, 
 		Attempts:             attempts,
 		Error:                joinLogError(streamErr, billingErr),
 	})
-	if resp.StatusCode < 400 {
+	if resp.StatusCode < 400 && streamErr == "" {
 		a.MarkSuccess()
-		if streamErr == "" {
-			// Served this model without being shed, so any capacity demotion
-			// recorded earlier is stale — capacity comes back abruptly, and a
-			// credential that has just proved it can serve the model should
-			// compete on equal terms for the next request rather than sitting
-			// out the rest of its window.
-			a.NoteModelServed(model)
-		}
+		a.NoteModelServed(model)
 	}
+
 	return false, true
 }
 
@@ -772,8 +764,7 @@ func (s *Server) doForwardCodexOAuth(c *gin.Context, a *auth.Auth, path string, 
 // event — the caller's cue that this turn will be silent for a minute or more.
 func aggregateCodexResponseStream(r io.Reader, counts *usage.Counts, onGenerating ...func()) (out []byte, shed string, err error) {
 	reader := newLineReader(r)
-	var byIndex []codexOutputSlot
-	var fallback []json.RawMessage
+	var output codexoauth.OutputAccumulator
 	generating := false
 
 	for {
@@ -794,6 +785,9 @@ func aggregateCodexResponseStream(r io.Reader, counts *usage.Counts, onGeneratin
 					if codexerr.Classify(payload) == codexerr.ClassRetryable || codexTransientError(payload) {
 						return nil, truncate(payload, 200), nil
 					}
+					if failure := apicompat.ResponseFailure(payload); failure != nil {
+						return nil, "", failure
+					}
 					var ev struct {
 						Type        string          `json:"type"`
 						Item        json.RawMessage `json:"item"`
@@ -811,19 +805,13 @@ func aggregateCodexResponseStream(r io.Reader, counts *usage.Counts, onGeneratin
 						}
 						switch ev.Type {
 						case "response.output_item.done":
-							if len(ev.Item) > 0 {
-								if ev.OutputIndex != nil {
-									byIndex = append(byIndex, codexOutputSlot{idx: *ev.OutputIndex, data: ev.Item})
-								} else {
-									fallback = append(fallback, ev.Item)
-								}
-							}
-						case "response.completed":
-							if len(ev.Response) == 0 {
+							output.Add(ev.OutputIndex, ev.Item)
+						case "response.completed", "response.incomplete":
+							if len(ev.Response) == 0 || bytes.Equal(bytes.TrimSpace(ev.Response), []byte("null")) {
 								return nil, "", errors.New("response.completed missing response field")
 							}
 							mergeCodexUsage(counts, extractCodexBackendUsageFromJSON(payload))
-							payload, perr := patchResponseOutput(ev.Response, byIndex, fallback)
+							payload, perr := output.Patch(ev.Response)
 							return payload, "", perr
 						}
 					}
@@ -834,43 +822,6 @@ func aggregateCodexResponseStream(r io.Reader, counts *usage.Counts, onGeneratin
 			return nil, "", fmt.Errorf("stream closed before response.completed: %w", rerr)
 		}
 	}
-}
-
-// patchResponseOutput replaces response.output with the collected
-// output_item.done events when the completed event arrived with an empty
-// or missing output array. Returns the (possibly unchanged) response JSON.
-type codexOutputSlot struct {
-	idx  int64
-	data json.RawMessage
-}
-
-func patchResponseOutput(response json.RawMessage, byIndex []codexOutputSlot, fallback []json.RawMessage) ([]byte, error) {
-	var obj map[string]json.RawMessage
-	if err := json.Unmarshal(response, &obj); err != nil {
-		return nil, fmt.Errorf("decode response: %w", err)
-	}
-	// Only patch if the existing output is missing or empty.
-	needsPatch := true
-	if cur, ok := obj["output"]; ok {
-		t := bytes.TrimSpace(cur)
-		if len(t) > 2 && !bytes.Equal(t, []byte("[]")) && !bytes.Equal(t, []byte("null")) {
-			needsPatch = false
-		}
-	}
-	if needsPatch && (len(byIndex) > 0 || len(fallback) > 0) {
-		sort.SliceStable(byIndex, func(i, j int) bool { return byIndex[i].idx < byIndex[j].idx })
-		items := make([]json.RawMessage, 0, len(byIndex)+len(fallback))
-		for _, s := range byIndex {
-			items = append(items, s.data)
-		}
-		items = append(items, fallback...)
-		patched, err := json.Marshal(items)
-		if err != nil {
-			return nil, err
-		}
-		obj["output"] = patched
-	}
-	return json.Marshal(obj)
 }
 
 // codexTerminalEvent reports whether a Codex backend SSE data payload is a
@@ -1110,6 +1061,7 @@ func codexTransientError(payload []byte) bool {
 // yet) and a logged give-up (bytes already committed downstream — from that
 // point the exchange is uninterruptible).
 type codexStreamResult struct {
+	failure     error // A translated upstream failure; never a successful completion.
 	sawTerminal bool  // a response.{completed,failed,...} event was relayed
 	wroteAny    bool  // at least one byte was committed to the client
 	err         error // underlying read error when the stream broke early
@@ -1257,6 +1209,7 @@ func codexStallRelaxer(r any, d time.Duration) func() {
 func streamSSECodexBackend(c *gin.Context, resp *http.Response, counts *usage.Counts, commit func()) codexStreamResult {
 	flusher, _ := c.Writer.(http.Flusher)
 	reader := newLineReader(resp.Body)
+	var output codexoauth.OutputAccumulator
 	out := codexStreamResult{}
 	// Start of the withhold window — see codexPreOutputWithholdCap.
 	withholdStart := time.Now()
@@ -1328,6 +1281,13 @@ func streamSSECodexBackend(c *gin.Context, resp *http.Response, counts *usage.Co
 				case bytes.HasPrefix(trim, []byte("data:")):
 					payload := bytes.TrimSpace(trim[5:])
 					if len(payload) > 0 && payload[0] == '{' {
+						repaired := output.Observe(payload)
+						if !bytes.Equal(repaired, payload) {
+							line = append(append([]byte("data: "), repaired...), line[len(trim):]...)
+							trim = bytes.TrimRight(line, "\r\n")
+							payload = repaired
+						}
+
 						lastPayloadType = codexEventType(payload)
 						mergeCodexUsage(counts, extractCodexBackendUsageFromJSON(payload))
 						if m := extractCodexUpstreamModel(payload); m != "" {

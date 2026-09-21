@@ -422,7 +422,3 @@ func sleepCtx(ctx context.Context, d time.Duration) bool {
 		return true
 	}
 }
-
-// codexDefaultCommittedStall mirrors config's committed_stall_timeout_seconds
-// default, for the one relay that has no config handy.
-const codexDefaultCommittedStall = 240 * time.Second

@@ -29,7 +29,7 @@ A `$0.10` Claude Sonnet call at the default tier (peg `¥2`, live rate `¥7.20`)
 ### Core proxy
 
 - **Two endpoints, one fleet** — Claude on `:8317` (`/v1/messages`), Codex on `:8318` (`/v1/chat/completions`, `/v1/responses`). Each can be enabled independently; per-provider concurrency budgets never share buckets.
-- **Native passthrough** — no protocol translation. Anthropic / OpenAI SDKs and CLIs (`claude`, `codex`) work unchanged.
+- **SDK and CLI compatibility** — native Anthropic forwarding plus OpenAI Responses and Chat Completions. Codex OAuth bridges Chat Completions through the shared cc-core Responses adapter, including streaming tool calls.
 - **Sticky sessions** — one client token always lands on the same upstream credential within an active window, preserving prompt cache hits and conversation continuity.
 - **Smart credential rotation** — automatic retries across credentials on 429 / 5xx / quota exceeded; sticky-session break on auth errors; configurable cooldowns; daily reset job for transient API-key failures.
 - **Per-credential proxies** — each OAuth file can specify its own SOCKS/HTTP proxy; uTLS Chrome fingerprint optional.
