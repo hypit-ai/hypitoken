@@ -102,7 +102,7 @@ admin_token: "change-me-long-random-string"
 #              claude-opus-4-8, claude-opus-5, claude-fable-5,
 #              claude-sonnet-4-6, claude-sonnet-5
 #   OpenAI:    gpt-5.2, gpt-5.3-codex[-spark], gpt-5.4[-mini], gpt-5.5,
-#              gpt-5.6-sol, gpt-5.6-terra, gpt-5.6-luna,
+#              gpt-6-sol, gpt-6-luna, gpt-5.6-sol, gpt-5.6-terra, gpt-5.6-luna,
 #              gpt-5, gpt-5-mini, gpt-5-nano, gpt-4o, gpt-4o-mini
 # Bare model keys (no slash) are interpreted as anthropic/<model> for
 # backward compatibility with older configs. Unlisted models fall back

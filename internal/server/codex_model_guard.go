@@ -20,7 +20,7 @@ import (
 // silence — indistinguishable from a capacity park. So the failover loop does
 // the only thing it can: burn the stall budget on one credential, then the
 // next, and answer 503 several minutes later for what was a typo. Production's
-// long tail is nothing but typos — gpt-6-sol, gpt-6, gpt-5.6, "GPT-6 Astra",
+// long tail is nothing but typos — gpt-6, gpt-5.6, "GPT-6 Astra",
 // hypitoken/gpt-5.6-luna, gpt-5.5-compact, gpt-5.6-sol-high — each with zero
 // successful requests in the entire archive, and each having cost a customer a
 // four-minute wait and an error that named nothing.
@@ -283,7 +283,6 @@ func quoteModel(m string) string { return "\"" + m + "\"" }
 // The shapes that actually occur are not random noise, so the rules are ordered
 // by how much they explain:
 //
-//	gpt-6-sol            → gpt-5.6-sol            (a digit dropped)
 //	GPT-6 Astra          → gpt-6-astra            (case and separator)
 //	hypitoken/gpt-5.6-luna → gpt-5.6-luna         (a routing prefix left on)
 //	gpt-5.6-sol-high     → gpt-5.6-sol            (a suffix from another vendor)
