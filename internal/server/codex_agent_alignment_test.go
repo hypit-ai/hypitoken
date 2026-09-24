@@ -20,50 +20,53 @@ import (
 // catches a route gate that would otherwise make the translator unreachable.
 func TestCodexAgentChatOAuthEndToEnd(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	for _, streaming := range []bool{false, true} {
-		t.Run(fmt.Sprint(streaming), func(t *testing.T) {
-			requests := make(chan []byte, 1)
-			backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				b, _ := io.ReadAll(r.Body)
-				requests <- b
-				if r.URL.Path != "/codex/responses" || r.Header.Get("Authorization") != "Bearer test-token" {
-					t.Errorf("bad upstream request: %s", r.URL.Path)
+	for _, model := range []string{"gpt-5.6-sol", "gpt-6-sol", "gpt-6-luna"} {
+		for _, streaming := range []bool{false, true} {
+			t.Run(model+"/"+fmt.Sprint(streaming), func(t *testing.T) {
+				requests := make(chan []byte, 1)
+				backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					b, _ := io.ReadAll(r.Body)
+					requests <- b
+					if r.URL.Path != "/codex/responses" || r.Header.Get("Authorization") != "Bearer test-token" {
+						t.Errorf("bad upstream request: %s", r.URL.Path)
+					}
+					w.Header().Set("Content-Type", "text/event-stream")
+					_, _ = io.WriteString(w, "data: "+`{"type":"response.output_item.done","output_index":0,"item":{"id":"fc_1","type":"function_call","call_id":"call_1","name":"run","arguments":"{\"command\":\"pwd\"}"}}`+"\n\n")
+					_, _ = io.WriteString(w, "data: "+`{"type":"response.completed","response":{"id":"resp_agent","status":"completed","output":[],"usage":{"input_tokens":10,"output_tokens":2}}}`+"\n\n")
+				}))
+				defer backend.Close()
+				s := codexHTTPTestServer(backend.URL, wsCred("agent-oauth"))
+				body := []byte(fmt.Sprintf(`{"model":%q,"stream":%t,"messages":[{"role":"user","content":"run pwd"}],"tools":[{"type":"function","function":{"name":"run","parameters":{"type":"object","properties":{"command":{"type":"string"}}}}}]}`, model, streaming))
+				rec := httptest.NewRecorder()
+				c, _ := gin.CreateTestContext(rec)
+				c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+				c.Set("client_token", "agent-test")
+				s.forward(c, auth.ProviderOpenAI, "/v1/chat/completions")
+				if rec.Code != 200 {
+					t.Fatalf("request failed: %d %s", rec.Code, rec.Body.String())
 				}
-				w.Header().Set("Content-Type", "text/event-stream")
-				_, _ = io.WriteString(w, "data: "+`{"type":"response.output_item.done","output_index":0,"item":{"id":"fc_1","type":"function_call","call_id":"call_1","name":"run","arguments":"{\"command\":\"pwd\"}"}}`+"\n\n")
-				_, _ = io.WriteString(w, "data: "+`{"type":"response.completed","response":{"id":"resp_agent","status":"completed","output":[],"usage":{"input_tokens":10,"output_tokens":2}}}`+"\n\n")
-			}))
-			defer backend.Close()
-			s := codexHTTPTestServer(backend.URL, wsCred("agent-oauth"))
-			body := []byte(fmt.Sprintf(`{"model":"gpt-5.6-sol","stream":%t,"messages":[{"role":"user","content":"run pwd"}],"tools":[{"type":"function","function":{"name":"run","parameters":{"type":"object","properties":{"command":{"type":"string"}}}}}]}`, streaming))
-			rec := httptest.NewRecorder()
-			c, _ := gin.CreateTestContext(rec)
-			c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
-			c.Set("client_token", "agent-test")
-			s.forward(c, auth.ProviderOpenAI, "/v1/chat/completions")
-			if rec.Code != 200 {
-				t.Fatalf("request failed: %d %s", rec.Code, rec.Body.String())
-			}
-			out := rec.Body.String()
-			for _, want := range []string{`"name":"run"`, `"call_1"`, `"finish_reason":"tool_calls"`, `pwd`} {
-				if !strings.Contains(out, want) {
-					t.Errorf("missing %s: %s", want, out)
+				out := rec.Body.String()
+				for _, want := range []string{`"name":"run"`, `"call_1"`, `"finish_reason":"tool_calls"`, `pwd`} {
+					if !strings.Contains(out, want) {
+						t.Errorf("missing %s: %s", want, out)
+					}
 				}
-			}
-			select {
-			case b := <-requests:
-				var req map[string]any
-				if err := json.Unmarshal(b, &req); err != nil {
-					t.Fatal(err)
+				select {
+				case b := <-requests:
+					var req map[string]any
+					if err := json.Unmarshal(b, &req); err != nil {
+						t.Fatal(err)
+					}
+					if req["stream"] != true || req["store"] != false || req["parallel_tool_calls"] != false || req["messages"] != nil {
+						t.Errorf("incorrect Codex request: %s", b)
+					}
+				default:
+					t.Fatal("OAuth backend was never called")
 				}
-				if req["stream"] != true || req["store"] != false || req["parallel_tool_calls"] != false || req["messages"] != nil {
-					t.Errorf("incorrect Codex request: %s", b)
-				}
-			default:
-				t.Fatal("OAuth backend was never called")
-			}
-		})
+			})
+		}
 	}
+
 }
 
 func TestCodexAgentIncompleteNonStreaming(t *testing.T) {

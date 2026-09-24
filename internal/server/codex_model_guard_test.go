@@ -18,7 +18,7 @@ func TestClosestModelNameOnProductionTypos(t *testing.T) {
 		"gpt-5.2", "codex-auto-review",
 	}
 	cases := []struct{ in, want string }{
-		{"gpt-6-sol", "gpt-5.6-sol"},               // a digit dropped
+		{"gpt-5.6-soll", "gpt-5.6-sol"},            // misspelled suffix
 		{"GPT-6 Astra", "gpt-6-astra"},             // case and separator
 		{"hypitoken/gpt-5.6-luna", "gpt-5.6-luna"}, // a routing prefix left on
 		{"gpt-5.6-sol-high", "gpt-5.6-sol"},        // a suffix borrowed from another vendor
@@ -58,11 +58,13 @@ func TestCodexModelVariantsResolveToTheirBase(t *testing.T) {
 	served := map[string]bool{
 		"gpt-5.6-sol": true, "gpt-5.6-terra": true, "gpt-5.6-luna": true,
 		"gpt-5.5": true, "gpt-5.4": true, "gpt-6-astra": true,
+		"gpt-6-sol": true, "gpt-6-luna": true,
 	}
 	// Every one of these is real production traffic that produced output.
 	// gpt-5.6-luna-max alone has 51 successful requests; refusing it because
 	// no catalog spells the suffix would break working customers.
 	for _, m := range []string{
+		"gpt-6-sol", "gpt-6-luna", "gpt-6-sol(ultra)", "gpt-6-luna(max)", "gpt-6-sol-high",
 		"gpt-5.6-sol(1m)", "gpt-5.6-terra(1m)", "gpt-5.6-luna(1m)",
 		"gpt-5.6-luna-max", "gpt-5.6-sol-ultra", "gpt-5.6-sol-ultra-openai-compact",
 		"gpt-5.5-openai-compact", "gpt-5.5-high", "gpt-5.5-low",
@@ -75,7 +77,7 @@ func TestCodexModelVariantsResolveToTheirBase(t *testing.T) {
 	}
 	// And the trimming must not run so far that a wrong name finds a base.
 	for _, m := range []string{
-		"gpt-6-sol", "hypitoken/gpt-5.6-luna", "claude-sonnet-4-6",
+		"gpt-5.6-soll", "hypitoken/gpt-5.6-luna", "claude-sonnet-4-6",
 		"5.6luna", "deepseek-chat", "gpt6", "gpt", "gpt-4",
 	} {
 		if codexModelServable(m, served) {
@@ -99,17 +101,17 @@ func TestHiddenModelsAreServable(t *testing.T) {
 // message quotes the model the customer typed, not the normalised form.
 func TestUnknownModelErrorNamesBothModelAndSuggestion(t *testing.T) {
 	set := map[string]bool{"gpt-5.6-sol": true, "gpt-6-astra": true}
-	rej := codexUnknownModelError("gpt-6-sol", set)
+	rej := codexUnknownModelError("gpt-5.6-soll", set)
 	if rej.Status != 404 || rej.Code != "model_not_found" {
 		t.Fatalf("status=%d code=%q, want 404/model_not_found", rej.Status, rej.Code)
 	}
-	if rej.Model != "gpt-6-sol" {
+	if rej.Model != "gpt-5.6-soll" {
 		t.Errorf("Model = %q, want the name as typed", rej.Model)
 	}
 	if rej.Suggestion != "gpt-5.6-sol" {
 		t.Errorf("Suggestion = %q, want gpt-5.6-sol", rej.Suggestion)
 	}
-	for _, want := range []string{`"gpt-6-sol"`, `"gpt-5.6-sol"`, "/v1/models"} {
+	for _, want := range []string{`"gpt-5.6-soll"`, `"gpt-5.6-sol"`, "/v1/models"} {
 		if !contains(rej.Message, want) {
 			t.Errorf("message %q is missing %q", rej.Message, want)
 		}
@@ -135,7 +137,7 @@ func codexGuardServer(creds ...*auth.Auth) *Server {
 // no forced API-key detour that would strand subscription traffic.
 func TestGuardPassesCatalogModels(t *testing.T) {
 	s := codexGuardServer(wsCred("pro-1"))
-	for _, m := range []string{"gpt-5.6-sol", "gpt-6-astra", "gpt-5.5", "codex-auto-review", "gpt-5.6-terra(1m)"} {
+	for _, m := range []string{"gpt-6-sol", "gpt-6-luna", "gpt-6-sol(ultra)", "gpt-6-luna(max)", "gpt-5.6-sol", "gpt-6-astra", "gpt-5.5", "codex-auto-review", "gpt-5.6-terra(1m)"} {
 		route := s.guardCodexModel(m)
 		if route.reject != nil {
 			t.Errorf("%s was refused: %s", m, route.reject.Message)
@@ -161,9 +163,9 @@ func TestGuardIgnoresAnUnnamedModel(t *testing.T) {
 // answerable immediately — with the name and the nearest served model.
 func TestGuardRefusesUnknownOnASubscriptionOnlyPool(t *testing.T) {
 	s := codexGuardServer(wsCred("pro-1"))
-	route := s.guardCodexModel("gpt-6-sol")
+	route := s.guardCodexModel("gpt-5.6-soll")
 	if route.reject == nil {
-		t.Fatal("gpt-6-sol was allowed through — it has never once produced output and would burn the whole pool")
+		t.Fatal("gpt-5.6-soll was allowed through — it has never once produced output and would burn the whole pool")
 	}
 	if route.reject.Suggestion != "gpt-5.6-sol" {
 		t.Errorf("suggestion = %q, want gpt-5.6-sol", route.reject.Suggestion)
@@ -201,9 +203,9 @@ func TestGuardRefusesWhenNeitherCatalogHasIt(t *testing.T) {
 	if route := s.guardCodexModel("deepseek-chat"); route.reject != nil || !route.apiKeyOnly {
 		t.Errorf("a relay model must route to the key: reject=%v apiKeyOnly=%v", route.reject, route.apiKeyOnly)
 	}
-	route := s.guardCodexModel("gpt-6-sol")
+	route := s.guardCodexModel("gpt-5.6-soll")
 	if route.reject == nil {
-		t.Fatal("gpt-6-sol is in neither catalog and must be refused")
+		t.Fatal("gpt-5.6-soll is in neither catalog and must be refused")
 	}
 	if route.reject.Suggestion != "gpt-5.6-sol" {
 		t.Errorf("suggestion = %q, want gpt-5.6-sol", route.reject.Suggestion)

@@ -162,7 +162,7 @@ func (s *Server) serveCodexModelsManifest(c *gin.Context, clientVersion string) 
 		// What the caller asked for still shapes the ANSWER — see
 		// FilterCodexManifest, which trims reasoning levels an older client
 		// cannot render — but it no longer shapes the question.
-		fetchVersion := mimicry.DefaultCodexProfile().ModelsClientVersion
+		fetchVersion := auth.CodexModelsCatalogVersion
 		body, err := s.codexManifests.Get(fetchVersion, func() ([]byte, error) {
 			// Try credentials in turn rather than trusting one. They do not
 			// share an egress: each carries its own SOCKS5 proxy, and one of
