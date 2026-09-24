@@ -1495,6 +1495,8 @@ export default {
       input: "Input",
       output: "Output",
       cacheWrite: "Cache write",
+      cacheWrite5m: "Cache write (5m)",
+      cacheWrite1h: "Cache write (1h)",
       cacheRead: "Cache read",
       group: "Group",
       claudeMult: "Claude ×",

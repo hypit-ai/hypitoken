@@ -1455,6 +1455,8 @@ export default {
       input: "输入",
       output: "输出",
       cacheWrite: "缓存写入",
+      cacheWrite5m: "缓存写入（5 分钟）",
+      cacheWrite1h: "缓存写入（1 小时）",
       cacheRead: "缓存读取",
       group: "分组",
       claudeMult: "Claude ×",

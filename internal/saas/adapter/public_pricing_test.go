@@ -169,3 +169,11 @@ func readRouterSource() (string, error) {
 	}
 	return string(b), nil
 }
+
+func TestPublicPricingOpus55(t *testing.T) {
+	got := fetchPublicPricing(t, pricing.NewCatalog(pricing.Config{}))
+	want := pricing.ModelPrice{InputPer1M: 4, OutputPer1M: 20, CacheReadPer1M: .2, CacheCreatePer1M: 5, CacheCreate1hPer1M: 8}
+	if card, ok := got.Models["anthropic/claude-opus-5-5"]; !ok || card != want {
+		t.Fatalf("Opus 5.5 public price=%+v, present=%v, want %+v", card, ok, want)
+	}
+}

@@ -79,12 +79,14 @@ type ModelRow = {
   input: number;
   output: number;
   cacheWrite: number | null;
+  cacheWrite1h: number | null;
   cacheRead: number | null;
 };
 
 /** Tier label + sort weight. Keys are catalogue model ids. */
 const PRESENTATION: Record<string, { display: string; tier: string }> = {
   "claude-fable-5": { display: "Claude Fable 5", tier: "flagship" },
+  "claude-opus-5-5": { display: "Claude Opus 5.5", tier: "flagship" },
   "claude-opus-5": { display: "Claude Opus 5", tier: "flagship" },
   "claude-opus-4-8": { display: "Claude Opus 4.8", tier: "advanced" },
   "claude-opus-4-7": { display: "Claude Opus 4.7", tier: "advanced" },
@@ -168,6 +170,10 @@ function rowFrom(name: string, card: PriceCard): ModelRow {
     // 0 means the catalogue has no rate for that axis (OpenAI cards carry no
     // cache-write until the 5.6 line); render it as "—" rather than "$0".
     cacheWrite: card.cache_create_per_1m > 0 ? card.cache_create_per_1m : null,
+    cacheWrite1h:
+      card.cache_create_1h_per_1m && card.cache_create_1h_per_1m > 0
+        ? card.cache_create_1h_per_1m
+        : null,
     cacheRead: card.cache_read_per_1m > 0 ? card.cache_read_per_1m : null,
   };
 }
@@ -555,7 +561,16 @@ function ModelCard({
           traffic cache reads and writes are the majority of a bill, so hiding
           them on six of seven models hid most of what a customer actually pays. */}
       <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
-        <CacheRow label={t("pricing.columns.cacheWrite")} value={m.cacheWrite} mult={mult} />
+        <CacheRow
+          label={t(
+            m.cacheWrite1h !== null ? "pricing.columns.cacheWrite5m" : "pricing.columns.cacheWrite",
+          )}
+          value={m.cacheWrite}
+          mult={mult}
+        />
+        {m.cacheWrite1h !== null ? (
+          <CacheRow label={t("pricing.columns.cacheWrite1h")} value={m.cacheWrite1h} mult={mult} />
+        ) : null}
         <CacheRow label={t("pricing.columns.cacheRead")} value={m.cacheRead} mult={mult} />
       </div>
     </motion.div>

@@ -243,12 +243,15 @@ Anthropic model IDs that currently have pricing (the console is authoritative):
 claude-haiku-4-5-20251001   claude-haiku-4-5
 claude-sonnet-4-6   claude-sonnet-5
 claude-opus-4-6   claude-opus-4-7   claude-opus-4-8   claude-opus-5
+claude-opus-5-5
 claude-fable-5
 ```
 
+Opus 5.5 (`claude-opus-5-5`) standard prices per million tokens: input $4, output $20, cache read $0.20, 5-minute cache write $5, and 1-hour cache write $8. The full 1M context uses these rates, before your group multiplier. [Official API pricing](https://platform.claude.com/docs/en/about-claude/pricing).
+
 Rule of thumb: `claude-haiku-4-5` is fastest and cheapest, `claude-sonnet-4-6` / `claude-sonnet-5` are the balanced recommendation, `claude-opus-*` are the most capable.
 
-> The Claude side has no model allowlist — any model name is forwarded upstream, and names outside the list above bill at the default rate. Suffixed names are recognised too, e.g. `claude-opus-5[1m]`.
+> The Claude side has no model allowlist — any model name is forwarded upstream, and names outside the list above bill at the default rate. Suffixed names are recognised too, e.g. `claude-opus-5-5[1m]`.
 > There is **no** `/v1/models` route on the Claude side (requesting it 404s); check the console for what's available.
 
 ## 7. Troubleshooting

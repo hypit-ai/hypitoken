@@ -4,6 +4,8 @@ import (
 	"testing"
 
 	"github.com/wjsoj/cc-core/auth"
+	"github.com/wjsoj/cc-core/pricing"
+	"github.com/wjsoj/cc-core/usage"
 )
 
 // Billing prices on the model we actually bought upstream; display keeps the
@@ -56,5 +58,37 @@ func TestBillingModelFor(t *testing.T) {
 					tc.name, tc.client, got, tc.wantBilled)
 			}
 		})
+	}
+}
+
+// A new Opus must retain its own lower price on OAuth and vendor-prefixed
+// API-key relays, including the long-context label.
+func TestOpus55BillingModel(t *testing.T) {
+	cat := pricing.NewCatalog(pricing.Config{})
+	for _, kind := range []auth.Kind{auth.KindOAuth, auth.KindAPIKey} {
+		a := &auth.Auth{Kind: kind, Provider: auth.ProviderAnthropic}
+		if kind == auth.KindAPIKey {
+			a.ModelMap = map[string]string{"claude-opus-5-5": "vendor/claude-opus-5-5"}
+		}
+		for _, model := range []string{"claude-opus-5-5", "claude-opus-5-5[1m]"} {
+			billed := billingModelFor(a, model)
+			counts := usage.Counts{InputTokens: 1_000_000, OutputTokens: 1_000_000, CacheReadTokens: 1_000_000, CacheCreateTokens: 2_000_000, CacheCreate1hTokens: 1_000_000}
+			if got := cat.Cost(auth.ProviderAnthropic, billed, counts); got != 37.2 {
+				t.Fatalf("kind=%d model=%s billed=%s cost=%g, want 37.2", kind, model, billed, got)
+			}
+		}
+	}
+}
+
+func TestOpus55ObservedUsageBilling(t *testing.T) {
+	const rawUsage = `{"input_tokens":300000,"output_tokens":10000,"cache_read_input_tokens":400000,"cache_creation_input_tokens":200000,"cache_creation":{"ephemeral_5m_input_tokens":50000,"ephemeral_1h_input_tokens":150000}}`
+	nonstream := extractUsageFromJSON([]byte(`{"usage":`+rawUsage+`}`), nil)
+	var stream usage.Counts
+	mergeSSEUsage(&stream, nil, []byte(`{"type":"message_start","message":{"usage":`+rawUsage+`}}`))
+	cat := pricing.NewCatalog(pricing.Config{})
+	for _, counts := range []usage.Counts{nonstream, stream} {
+		if got := cat.Cost(auth.ProviderAnthropic, "claude-opus-5-5", counts); got != 2.93 {
+			t.Fatalf("observed counts=%+v cost=%g, want 2.93", counts, got)
+		}
 	}
 }

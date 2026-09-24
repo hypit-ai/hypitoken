@@ -99,7 +99,7 @@ admin_token: "change-me-long-random-string"
 
 # Pricing table. Keyed by "<provider>/<model>". Built-in defaults cover:
 #   Anthropic: claude-haiku-4-5, claude-opus-4-6, claude-opus-4-7,
-#              claude-opus-4-8, claude-opus-5, claude-fable-5,
+#              claude-opus-4-8, claude-opus-5, claude-opus-5-5, claude-fable-5,
 #              claude-sonnet-4-6, claude-sonnet-5
 #   OpenAI:    gpt-5.2, gpt-5.3-codex[-spark], gpt-5.4[-mini], gpt-5.5,
 #              gpt-6-sol, gpt-6-luna, gpt-5.6-sol, gpt-5.6-terra, gpt-5.6-luna,
@@ -127,6 +127,12 @@ admin_token: "change-me-long-random-string"
 #       output_per_1m: 10.00
 #       cache_read_per_1m: 0.125
 #   models:
+#     anthropic/claude-opus-5-5:
+#       input_per_1m: 4.0
+#       output_per_1m: 20.0
+#       cache_read_per_1m: 0.20
+#       cache_create_per_1m: 5.0
+#       cache_create_1h_per_1m: 8.0
 #     anthropic/claude-opus-4-7:
 #       input_per_1m: 5.0
 #       output_per_1m: 25.0

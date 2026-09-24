@@ -244,12 +244,15 @@ git diff | claude -p --model claude-sonnet-4-6 --output-format json "审查这�
 claude-haiku-4-5-20251001   claude-haiku-4-5
 claude-sonnet-4-6   claude-sonnet-5
 claude-opus-4-6   claude-opus-4-7   claude-opus-4-8   claude-opus-5
+claude-opus-5-5
 claude-fable-5
 ```
 
+Opus 5.5（`claude-opus-5-5`）标准价，单位为美元/百万 token：输入 $4、输出 $20、缓存读取 $0.20、5 分钟缓存写入 $5、1 小时缓存写入 $8。完整 1M 上下文同价，再按分组倍率结算。[官方 API 定价](https://platform.claude.com/docs/en/about-claude/pricing)。
+
 选型参考：`claude-haiku-4-5` 最快最省，`claude-sonnet-4-6` / `claude-sonnet-5` 均衡推荐，`claude-opus-*` 最强。
 
-> Claude 端不做模型白名单，任何模型名都会转发到上游；上面之外的名字按默认价计费。模型名可以带后缀并被正确识别，例如 `claude-opus-5[1m]`。
+> Claude 端不做模型白名单，任何模型名都会转发到上游；上面之外的名字按默认价计费。模型名可以带后缀并被正确识别，例如 `claude-opus-5-5[1m]`。
 > Claude 端**没有** `/v1/models` 路由（请求它会 404），可用模型请看控制台。
 
 ## 七、常见报错排查

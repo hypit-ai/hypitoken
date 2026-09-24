@@ -66,7 +66,7 @@ export const CC_SWITCH_DEFAULT_MODELS = {
   claude: {
     haikuModel: "claude-haiku-4-5",
     sonnetModel: "claude-sonnet-5",
-    opusModel: "claude-opus-5",
+    opusModel: "claude-opus-5-5",
   },
   codex: {
     model: "gpt-6-astra",
