@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/wjsoj/cc-core/auth"
+	"github.com/wjsoj/cc-core/usage"
 )
 
 func TestAPIKeyAutoDisablePersistsAndCannotBeLastResort(t *testing.T) {
@@ -238,5 +240,61 @@ func TestAPIKeyNativeNonStreamAggregatesUpstreamSSE(t *testing.T) {
 	retry, done := s.doForwardCodex(c, a, "/v1/responses", body, false, "gpt-6-sol", "client", "client", "s", time.Now(), 1)
 	if retry || !done || w.Code != 200 || w.Header().Get("Content-Type") != "application/json" || !strings.Contains(w.Body.String(), "OK") || strings.Contains(w.Body.String(), "data:") {
 		t.Fatalf("retry=%v done=%v status=%d body=%s", retry, done, w.Code, w.Body.String())
+	}
+}
+
+func TestAPIKeyKeepaliveDoesNotCancelSilentAttemptBudget(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"type\":\"response.created\"}\n\ndata: {\"type\":\"response.queued\"}\n\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"\"}\n\n"))
+		w.(http.Flusher).Flush()
+		<-r.Context().Done()
+	}))
+	defer upstream.Close()
+	parent, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	ctx, contentStarted, finish := apiKeyAttemptContext(parent, 3*time.Second)
+	defer finish()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, upstream.URL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	c, w := newCodexContext(t, "/v1/responses", []byte(`{"stream":true}`))
+	var counts usage.Counts
+	var commits atomic.Int32
+	result := streamSSECodexBackendWithContentStart(c, resp, &counts, func() { commits.Add(1) }, contentStarted)
+	if commits.Load() != 1 || !strings.Contains(w.Body.String(), ":\n\n") {
+		t.Fatalf("expected header-only keepalive: commits=%d body=%q", commits.Load(), w.Body.String())
+	}
+	if result.wroteAny {
+		t.Fatal("keepalive was counted as real output")
+	}
+	if cause := context.Cause(ctx); cause == nil || !strings.Contains(cause.Error(), "produced no output") {
+		t.Fatalf("keepalive canceled the silent attempt budget: %v", cause)
+	}
+}
+
+func TestAPIKeyCompletionDoesNotWaitForUpstreamClose(t *testing.T) {
+	c, w := newCodexContext(t, "/v1/responses", nil)
+	body := io.MultiReader(strings.NewReader("data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":1,\"output_tokens\":2}}}\n\n"), blockingReader{})
+	resp := &http.Response{Body: io.NopCloser(body)}
+	var counts usage.Counts
+	done := make(chan codexStreamResult, 1)
+	go func() { done <- streamSSECodexBackendWithContentStart(c, resp, &counts, func() {}, func() {}) }()
+	select {
+	case res := <-done:
+		if !res.sawTerminal || !res.wroteAny || res.err != nil {
+			t.Fatalf("incomplete result: %+v", res)
+		}
+		if !strings.HasSuffix(w.Body.String(), "\n\n") {
+			t.Fatalf("terminal SSE frame missing separator: %q", w.Body.String())
+		}
+	case <-time.After(time.Second):
+		t.Fatal("completed answer waited for upstream EOF")
 	}
 }

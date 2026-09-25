@@ -11,6 +11,8 @@ import "testing"
 // Ordering is ground truth from crack/codexapp0.147.0/rows/13-ws-server-events.
 func TestCodexPreambleCoversTheWholePreTextWindow(t *testing.T) {
 	preText := []string{
+		`{"type":"response.queued"}`,
+		`{"type":"response.output_text.delta","delta":""}`,
 		`{"type":"response.created"}`,
 		`{"type":"response.in_progress"}`,
 		`{"type":"response.output_item.added","item":{"id":"msg_1","type":"message"}}`,

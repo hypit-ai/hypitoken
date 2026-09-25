@@ -863,7 +863,8 @@ func codexEventType(payload []byte) string {
 
 func codexPreambleEvent(payload []byte) bool {
 	var ev struct {
-		Type string `json:"type"`
+		Type  string  `json:"type"`
+		Delta *string `json:"delta"`
 	}
 	if json.Unmarshal(payload, &ev) != nil {
 		return false
@@ -879,6 +880,9 @@ func codexPreambleEvent(payload []byte) bool {
 	// 326 truncated streams were a turn committed by an untyped frame, parked
 	// by the backend, and then cut at the stall budget with no failover left.
 	if ev.Type == "" {
+		return true
+	}
+	if ev.Type == "response.output_text.delta" && ev.Delta != nil && *ev.Delta == "" {
 		return true
 	}
 	return codexContentFreeEvents[ev.Type]
@@ -926,6 +930,7 @@ func codexPreambleEvent(payload []byte) bool {
 var codexContentFreeEvents = map[string]bool{
 	"response.created":                      true,
 	"response.in_progress":                  true,
+	"response.queued":                       true,
 	"response.output_item.added":            true,
 	"response.content_part.added":           true,
 	"response.reasoning_summary_part.added": true,
@@ -1206,7 +1211,13 @@ func codexStallRelaxer(r any, d time.Duration) func() {
 	return func() {}
 }
 
-func streamSSECodexBackend(c *gin.Context, resp *http.Response, counts *usage.Counts, commit func(), rewriteModel ...string) codexStreamResult {
+func streamSSECodexBackend(c *gin.Context, resp *http.Response, counts *usage.Counts, commit func()) codexStreamResult {
+	return streamSSECodexBackendWithContentStart(c, resp, counts, commit, nil)
+}
+
+// Header-only keepalives are not upstream progress. The API-key attempt timer
+// must stop only when real content is released, not when SSE headers are sent.
+func streamSSECodexBackendWithContentStart(c *gin.Context, resp *http.Response, counts *usage.Counts, commit, contentStarted func(), rewriteModel ...string) codexStreamResult {
 	flusher, _ := c.Writer.(http.Flusher)
 	reader := newLineReader(resp.Body)
 	var output codexoauth.OutputAccumulator
@@ -1481,6 +1492,9 @@ func streamSSECodexBackend(c *gin.Context, resp *http.Response, counts *usage.Co
 
 			if len(emit) > 0 {
 				if !sentAny {
+					if contentStarted != nil {
+						contentStarted()
+					}
 					out.firstOutputAt = time.Now()
 					out.committedBy = lastPayloadType
 					if lastPayloadType == "" {
@@ -1488,6 +1502,11 @@ func streamSSECodexBackend(c *gin.Context, resp *http.Response, counts *usage.Co
 					}
 				}
 				sentAny = true
+			}
+			// Native API-key relays sometimes keep HTTP open after completion.
+			// Finish the SSE frame and return the completed answer immediately.
+			if terminal && contentStarted != nil {
+				return append(emit, '\n'), true, io.EOF
 			}
 			if fatalFrame && rerr == nil {
 				// Emit the frame, then end. io.EOF rather than a synthetic

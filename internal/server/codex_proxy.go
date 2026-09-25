@@ -603,11 +603,10 @@ func (s *Server) doForwardCodex(c *gin.Context, a *auth.Auth, path string, body 
 				// withholding as OAuth: an opener is not a usable answer.
 				relayResp := *resp
 				relayResp.Body = io.NopCloser(br)
-				res := streamSSECodexBackend(c, &relayResp, &counts, func() {
-					commitAttempt()
+				res := streamSSECodexBackendWithContentStart(c, &relayResp, &counts, func() {
 					markCommitted(c)
 					writeSSEResponseHeaders(c, resp)
-				}, rewriteClientModel)
+				}, commitAttempt, rewriteClientModel)
 				firstOutputAt = res.firstOutputAt
 				clientGone = !res.sawTerminal && isClientDisconnect(ctx, res.err)
 				if !res.wroteAny && !clientGone && (!res.sawTerminal || res.shed != "") {
