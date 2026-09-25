@@ -16,6 +16,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { apiPatch } from "@/lib/api";
 import type { Credential } from "@/lib/types";
 import { errMsg } from "@/lib/utils";
+import { AllowedModelsField, parseAllowedModels } from "./allowed-models-field";
 
 export function EditCredentialDialog({
   cred,
@@ -35,6 +36,7 @@ export function EditCredentialDialog({
   const [maxC, setMaxC] = useState("");
   const [disabled, setDisabled] = useState(false);
   const [modelMap, setModelMap] = useState("");
+  const [allowedModels, setAllowedModels] = useState("");
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
@@ -46,6 +48,7 @@ export function EditCredentialDialog({
       setAPIKey("");
       setMaxC(String(cred.max_concurrent ?? 0));
       setDisabled(!!cred.disabled);
+      setAllowedModels((cred.allowed_models ?? []).join("\n"));
       setModelMap(
         cred.model_map && Object.keys(cred.model_map).length > 0
           ? JSON.stringify(cred.model_map, null, 2)
@@ -68,6 +71,7 @@ export function EditCredentialDialog({
         base_url?: string;
         api_key?: string;
         model_map?: Record<string, string>;
+        allowed_models?: string[];
       } = {
         label,
         group,
@@ -77,6 +81,7 @@ export function EditCredentialDialog({
       };
       if (isAPIKey) {
         body.base_url = base;
+        body.allowed_models = parseAllowedModels(allowedModels);
         if (apiKey.trim() !== "") {
           body.api_key = apiKey.trim();
         }
@@ -105,7 +110,7 @@ export function EditCredentialDialog({
 
   return (
     <Dialog open={!!cred} onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className="sm:max-w-[560px]">
+      <DialogContent className="max-h-[90dvh] overflow-y-auto sm:max-w-[560px]">
         <DialogHeader>
           <DialogTitle>{t("admin.creds.edit.title", { label: cred.label })}</DialogTitle>
           <DialogDescription className="font-mono text-xs">{cred.id}</DialogDescription>
@@ -175,6 +180,7 @@ export function EditCredentialDialog({
               </div>
             </>
           )}
+          {isAPIKey && <AllowedModelsField value={allowedModels} onChange={setAllowedModels} />}
           <div className="space-y-2">
             <Label htmlFor="ec-modelmap">{t("admin.creds.edit.modelMapJson")}</Label>
             <Textarea

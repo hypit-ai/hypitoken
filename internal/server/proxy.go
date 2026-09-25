@@ -374,6 +374,7 @@ func (s *Server) forwardWithFailover(c *gin.Context, provider, path, model, clie
 		a := s.pool.AcquireWithOptions(c.Request.Context(), provider, clientToken, clientGroup, model, slotID, auth.AcquireOptions{
 			AllowAPIKeyFallback: true,
 			APIKeyOnly:          apiKeyOnly,
+			APIKeyRoundRobin:    provider == auth.ProviderOpenAI && s.apiKeyOnlyConfigured(model),
 			ExcludeIDs:          excludeIDs,
 		})
 		if a == nil {
@@ -399,6 +400,12 @@ func (s *Server) forwardWithFailover(c *gin.Context, provider, path, model, clie
 			return
 		}
 		tried[a.ID] = true
+		if a.Kind == auth.KindAPIKey && a.IsModelRateLimited(apiKeyModelScope(model), time.Now()) {
+			// A cached capability rejection costs no upstream attempt. Keep it
+			// excluded for this request, even if it was picked as last resort.
+			attempt--
+			continue
+		}
 		attempts++
 		var preflightPrepared mimicry.BodyTransformResult
 
@@ -452,7 +459,11 @@ func (s *Server) forwardWithFailover(c *gin.Context, provider, path, model, clie
 		var deferred *deferredResponse
 		switch auth.NormalizeProvider(a.Provider) {
 		case auth.ProviderOpenAI:
+			c.Set(codexDeferredResponseContextKey, (*deferredResponse)(nil))
 			retry, done = s.doForwardCodex(c, a, path, body, stream, model, clientToken, clientName, slotID, start, attempts)
+			if v, ok := c.Get(codexDeferredResponseContextKey); ok {
+				deferred, _ = v.(*deferredResponse)
+			}
 			// The turn died on a WebSocket the backend had closed while it sat
 			// in the pool. That is a fact about one socket, not about the
 			// account: excluding the credential here would spend a failover
@@ -1304,13 +1315,9 @@ func billingModelFor(a *auth.Auth, clientModel string) string {
 // malformed requests can no longer degrade a channel that is serving
 // everyone else correctly.
 //
-// Both upstream-side classes feed cc-core's API-key circuit breaker: enough
-// consecutive faults pause the channel for a self-expiring, exponentially
-// growing interval, so traffic rotates onto another key instead of re-paying
-// a doomed round-trip per request, and the channel probes itself back into
-// rotation with no operator involvement. A definitive credential rejection
-// pauses on the first strike. Neither ever *retires* the channel — only the
-// explicit Disabled flag takes an API key offline for good.
+// Three consecutive upstream faults disable the API key and persist that
+// decision. Only explicit operator enable restores it; cooldown expiry and
+// last-resort selection cannot revive a disabled channel.
 //
 // A <400 response is additionally checked against the Messages API wire
 // format before it is committed or billed (validateAnthropicResponse) — a
@@ -1376,7 +1383,7 @@ func (s *Server) doForwardAnthropicAPIKey(c *gin.Context, a *auth.Auth, path str
 		// Claude OAuth path and both Codex paths already did this; this was the
 		// last forward path that gave up on the first connection error.
 		log.Warnf("proxy(apikey): upstream transport error via %s: %v — retrying on another credential", a.ID, err)
-		a.MarkFailure(fmt.Sprintf("transport: %v", err))
+		s.recordAPIKeyFailure(a, http.StatusBadGateway, time.Time{}, "upstream transport error")
 		s.emitLog(requestlog.Record{
 			Client: clientName, ClientToken: maskClientToken(clientToken),
 			Provider: auth.NormalizeProvider(a.Provider), AuthID: a.ID, AuthLabel: a.Label, AuthKind: "apikey",
@@ -1471,19 +1478,18 @@ func (s *Server) doForwardAnthropicAPIKey(c *gin.Context, a *auth.Auth, path str
 	fault := classifyUpstreamStatus(statusForFault)
 	switch fault {
 	case faultNone:
-		a.MarkSuccess()
+		s.recordAPIKeySuccess(a)
 	case faultCredential:
 		// Revoked, forbidden, or out of funds — definitive, so cc-core pauses
 		// the channel on this single strike rather than re-presenting a dead
-		// key on every subsequent request. Still never sticky for an API key:
-		// the pause expires by itself.
-		a.MarkHardFailure(fmt.Sprintf("upstream %d", statusForFault))
+		// key on every subsequent request. Repeated faults also disable it.
+		s.recordAPIKeyFailure(a, statusForFault, parseRetryAfter(resp.Header), fmt.Sprintf("upstream %d", statusForFault))
 	case faultUpstream:
 		// Throttling, gateway errors, or a contract violation. Not a verdict
 		// on the key itself, so it takes several in a row before cc-core
 		// pauses the channel — enough to ride out the ordinary weather of a
 		// shared relay without pausing anything that still works.
-		a.MarkFailure(fmt.Sprintf("upstream %d", statusForFault))
+		s.recordAPIKeyFailure(a, statusForFault, parseRetryAfter(resp.Header), fmt.Sprintf("upstream %d", statusForFault))
 	case faultClient:
 		// The caller's own request is at fault (400 malformed, 404 route not
 		// implemented by this relay, 413 too large, …). Another credential

@@ -78,7 +78,7 @@ func TestAPIKeyContractViolationIsWithheldAndRetried(t *testing.T) {
 // the circuit breaker: a relay that keeps answering 200-with-HTML must
 // eventually be taken out of rotation, so traffic rotates onto another key
 // instead of re-paying a doomed upstream round-trip on every single request.
-// The pause must be temporary — an operator-managed channel is never retired.
+// Three consecutive faults disable the channel until explicit manual recovery.
 func TestAPIKeyRepeatedFaultsPauseTheChannel(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -108,11 +108,11 @@ func TestAPIKeyRepeatedFaultsPauseTheChannel(t *testing.T) {
 		t.Fatal("a paused channel must read unhealthy so the pool routes around it")
 	}
 	if cred.IsHardFailed() {
-		t.Fatal("the pause must never harden into an operator-cleared failure")
+		t.Fatal("API-key retirement must use Disabled, not the OAuth hard-failure flag")
 	}
-	// Self-healing: the deadline expires without intervention.
-	if cred.IsQuarantined(until.Add(time.Second)) {
-		t.Fatal("the pause must expire on its own so the channel gets another probe")
+	cred.IsQuarantined(until.Add(time.Second))
+	if !cred.Snapshot().Disabled || cred.IsHealthy() {
+		t.Fatal("cooldown expiry must not restore an automatically disabled channel")
 	}
 }
 
@@ -176,8 +176,7 @@ func TestAPIKeyUpstreamFaultCountsTowardHealth(t *testing.T) {
 	if _, _, _, consecutive := cred.HealthSnapshot(); consecutive != 1 {
 		t.Fatalf("ConsecutiveFailures = %d, want 1 — throttling is an upstream fault and must be visible to operators", consecutive)
 	}
-	// An API-key channel is never auto-retired, however badly it behaves:
-	// only the explicit Disabled flag takes it out of rotation.
+	// A single throttle counts once but does not reach the disable threshold.
 	if _, hardFailed, _, _ := cred.HealthSnapshot(); hardFailed {
 		t.Fatal("an API-key credential must never be auto-hard-failed")
 	}

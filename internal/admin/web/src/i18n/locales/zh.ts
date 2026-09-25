@@ -958,6 +958,11 @@ export default {
       removed: "已移除",
       confirmRemove: '移除凭证 "{{name}}"？',
       maxConcurrent: "最大并发",
+      allowedModelsLabel: "允许模型（仅 API key）",
+      allowedModelsHint:
+        "每行一个模型名，也可用逗号分隔。留空不限制；填写后只接收列出的请求模型，精确匹配后再执行模型映射。",
+      allowedModelsCount: "仅限 {{count}} 个模型",
+      allowedModelsAny: "不限制模型",
       modelMapLabel: "模型映射（可选，JSON）",
       modelMapHint: "把请求的模型改写为上游模型，例如把 opus 路由到更便宜的档位。",
       modelMapParseError: "model_map JSON 解析失败：{{msg}}",

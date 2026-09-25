@@ -92,6 +92,12 @@ anthropic_base_url:        "https://api.anthropic.com"
 openai_base_url:           "https://api.openai.com"          # BYOK Codex API-key path
 chatgpt_backend_base_url:  "https://chatgpt.com/backend-api" # Codex OAuth path
 
+# Optional: route selected models only to API-key credentials, using their
+# allowed_models lists. Equal-priority healthy keys share these models;
+# no matching enabled key returns a clear 503 without querying model lists.
+# Example: ["gpt-6-astra", "gpt-6-sol", "gpt-6-luna"]
+openai_api_key_only_models: []
+
 # Admin panel token. Protects the legacy operator API at /admin/api/*
 # (used by the SaaS frontend for ops actions; also accepts X-Admin-Token
 # or Authorization: Bearer). Leave empty to disable the legacy API.
@@ -159,7 +165,8 @@ api_keys:
   #   proxy_url: ""
   #   base_url: ""          # override upstream host (third-party relays)
   #   group: ""             # public; or e.g. "premium" to scope this key
-  #   model_map: {}         # non-empty turns this key model-restricted
+  #   model_map: {}         # rewrite model names only
+  #   allowed_models: []    # exact request names; empty means unrestricted
   #
   # — OpenAI BYOK key used by the Codex endpoint. Routed to
   #   {base_url}/v1/chat/completions or /v1/responses.

@@ -360,6 +360,7 @@ export interface Credential {
   last_client_cancel?: string;
   client_cancel_reason?: string;
   model_map?: Record<string, string>;
+  allowed_models?: string[];
   usage?: CredentialUsage;
   /** Rejection-anchored weekly allotment: what the 7-day window was worth
    * the last time this process saw it fill. Anthropic OAuth only; absent

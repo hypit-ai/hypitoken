@@ -21,10 +21,9 @@ type APIKey struct {
 	Label    string `yaml:"label,omitempty"`
 	BaseURL  string `yaml:"base_url,omitempty"`
 	Group    string `yaml:"group,omitempty"`
-	// ModelMap routes/rewrites client-facing model names to upstream model
-	// names. See auth.Auth.ModelMap. Non-empty map turns this key into a
-	// model-restricted credential. Empty = wildcard.
-	ModelMap map[string]string `yaml:"model_map,omitempty"`
+	// ModelMap rewrites names; AllowedModels independently restricts routing.
+	ModelMap      map[string]string `yaml:"model_map,omitempty"`
+	AllowedModels []string          `yaml:"allowed_models,omitempty"`
 }
 
 // EndpointConfig selects the listening host/port for one provider-scoped
@@ -96,6 +95,11 @@ type Config struct {
 	// it'll receive /responses directly. This makes BaseURL authoritative
 	// for whether /v1/ ends up in the upstream URL.
 	OpenAIBaseURL string `yaml:"openai_base_url,omitempty"`
+
+	// Models explicitly served only by API-key channels. Their allowlists are
+	// authoritative; no upstream model-list probe is needed. Equally ranked
+	// healthy channels share requests; lower-priority channels remain backups.
+	OpenAIAPIKeyOnlyModels []string `yaml:"openai_api_key_only_models,omitempty"`
 
 	// Codex OAuth-authenticated requests hit the ChatGPT backend, not the
 	// public OpenAI API. This base URL is here so installations behind

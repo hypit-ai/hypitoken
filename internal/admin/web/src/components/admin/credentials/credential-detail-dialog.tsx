@@ -231,6 +231,21 @@ export function CredentialDetailDialog({
               </Block>
             )}
 
+            {c.kind === "apikey" && (
+              <div className="lg:col-span-2">
+                <Block title={t("admin.creds.allowedModelsLabel")}>
+                  {c.allowed_models?.length ? (
+                    <ul className="flex flex-col gap-1">
+                      {c.allowed_models.map((model) => (
+                        <li key={model}>{model}</li>
+                      ))}
+                    </ul>
+                  ) : (
+                    t("admin.creds.allowedModelsAny")
+                  )}
+                </Block>
+              </div>
+            )}
             {c.model_map && Object.keys(c.model_map).length > 0 && (
               <div className="lg:col-span-2">
                 <Block

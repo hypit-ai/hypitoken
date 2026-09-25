@@ -15,6 +15,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { apiPost } from "@/lib/api";
 import { errMsg } from "@/lib/utils";
+import { AllowedModelsField, parseAllowedModels } from "./allowed-models-field";
 
 export interface CredentialDialogProps {
   open: boolean;
@@ -35,9 +36,10 @@ export function AddAPIKeyDialog({
   const [proxy, setProxy] = useState("");
   const [group, setGroup] = useState("");
   const [modelMap, setModelMap] = useState("");
+  const [allowedModels, setAllowedModels] = useState("");
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-[500px]">
+      <DialogContent className="max-h-[90dvh] overflow-y-auto sm:max-w-[500px]">
         <DialogHeader>
           <DialogTitle>
             {t("admin.creds.newApiTitle")} ·{" "}
@@ -85,6 +87,7 @@ export function AddAPIKeyDialog({
             <Label htmlFor="ak-5">{t("admin.creds.cols.group")}</Label>
             <Input id="ak-5" value={group} onChange={(e) => setGroup(e.target.value)} />
           </div>
+          <AllowedModelsField value={allowedModels} onChange={setAllowedModels} />
           <div className="space-y-2">
             <Label htmlFor="ak-6">{t("admin.creds.modelMapLabel")}</Label>
             <Textarea
@@ -125,6 +128,7 @@ export function AddAPIKeyDialog({
                   proxy_url: proxy,
                   group,
                   model_map,
+                  allowed_models: parseAllowedModels(allowedModels),
                 });
                 toast.success(t("admin.creds.newApiCreated"));
                 onCreated();
@@ -135,6 +139,7 @@ export function AddAPIKeyDialog({
                 setProxy("");
                 setGroup("");
                 setModelMap("");
+                setAllowedModels("");
               } catch (e) {
                 toast.error(errMsg(e));
               }

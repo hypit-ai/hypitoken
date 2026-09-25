@@ -301,6 +301,13 @@ export const CredentialCard = memo(function CredentialCard({
             <span className="text-muted-foreground">{t("admin.creds.facts.direct")}</span>
           )}
         </Fact>
+        {c.kind === "apikey" && (
+          <Fact label={t("admin.creds.allowedModelsLabel")}>
+            {c.allowed_models?.length
+              ? t("admin.creds.allowedModelsCount", { count: c.allowed_models.length })
+              : t("admin.creds.allowedModelsAny")}
+          </Fact>
+        )}
         <Fact label={t("admin.creds.facts.modelMap")}>
           {mapped > 0 ? (
             t("admin.creds.facts.modelMapCount", { count: mapped })

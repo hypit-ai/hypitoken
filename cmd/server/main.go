@@ -117,15 +117,16 @@ func main() {
 			proxy = cfg.DefaultProxyURL
 		}
 		apikeys = append(apikeys, &auth.Auth{
-			ID:          "apikey:" + label,
-			Kind:        auth.KindAPIKey,
-			Provider:    auth.NormalizeProvider(k.Provider),
-			Label:       label,
-			AccessToken: k.Key,
-			ProxyURL:    proxy,
-			BaseURL:     k.BaseURL,
-			Group:       auth.NormalizeGroup(k.Group),
-			ModelMap:    k.ModelMap,
+			ID:            "apikey:" + label,
+			Kind:          auth.KindAPIKey,
+			Provider:      auth.NormalizeProvider(k.Provider),
+			Label:         label,
+			AccessToken:   k.Key,
+			ProxyURL:      proxy,
+			BaseURL:       k.BaseURL,
+			Group:         auth.NormalizeGroup(k.Group),
+			ModelMap:      k.ModelMap,
+			AllowedModels: auth.NormalizeAllowedModels(k.AllowedModels),
 		})
 	}
 	log.Infof("loaded %d API key(s)", len(apikeys))

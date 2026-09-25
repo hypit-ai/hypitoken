@@ -391,6 +391,7 @@ type authRow struct {
 	LastClientCancel   *time.Time        `json:"last_client_cancel,omitempty"`
 	ClientCancelReason string            `json:"client_cancel_reason,omitempty"`
 	ModelMap           map[string]string `json:"model_map,omitempty"`
+	AllowedModels      []string          `json:"allowed_models,omitempty"`
 	Usage              *usageSummary     `json:"usage,omitempty"`
 	// WeeklyAllotment is what the credential's 7-day window turned out to be
 	// worth the last time it filled: the request-log spend between the
@@ -619,6 +620,7 @@ func (h *Handler) buildAuthRows() []authRow {
 			LastClientCancel:       cancelAt,
 			ClientCancelReason:     cancelReason,
 			ModelMap:               st.Auth.ModelMap,
+			AllowedModels:          st.Auth.AllowedModels,
 			Usage:                  u,
 			WeeklyAllotment:        h.weeklyAllotment(st.Auth, provider, kind),
 			WeeklyAllotmentHistory: h.quotaHist().For(st.Auth.ID),
@@ -827,6 +829,7 @@ type patchAuthBody struct {
 	Label                *string            `json:"label"`
 	Group                *string            `json:"group"`
 	ModelMap             *map[string]string `json:"model_map"`
+	AllowedModels        *[]string          `json:"allowed_models"`
 }
 
 func (h *Handler) handlePatchAuth(c *gin.Context) {
@@ -848,6 +851,10 @@ func (h *Handler) handlePatchAuth(c *gin.Context) {
 	var body patchAuthBody
 	if err := c.ShouldBindJSON(&body); err != nil {
 		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if body.AllowedModels != nil && a.Kind != auth.KindAPIKey {
+		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "allowed_models is API-key-only"})
 		return
 	}
 	if body.APIKey != nil {
@@ -874,6 +881,11 @@ func (h *Handler) handlePatchAuth(c *gin.Context) {
 		a.SetExplicitFailuresOnly(*body.ExplicitFailuresOnly)
 	}
 	if body.Disabled != nil {
+		if !*body.Disabled && a.Kind == auth.KindAPIKey {
+			// Explicit enable starts a fresh trial after automatic retirement.
+			a.ClearFailure()
+			a.ClearQuota()
+		}
 		a.SetDisabled(*body.Disabled)
 	}
 	if body.MaxConcurrent != nil {
@@ -893,6 +905,9 @@ func (h *Handler) handlePatchAuth(c *gin.Context) {
 	}
 	if body.Group != nil {
 		a.SetGroup(*body.Group)
+	}
+	if body.AllowedModels != nil {
+		a.SetAllowedModels(*body.AllowedModels)
 	}
 	if body.ModelMap != nil {
 		// Rewrite table for both kinds. API-key relays remap vendor model names;
@@ -1209,14 +1224,15 @@ func (h *Handler) handleOAuthFinish(c *gin.Context) {
 // ---- API key CRUD ----
 
 type createAPIKeyBody struct {
-	Provider string            `json:"provider"` // "anthropic" | "openai"; empty = anthropic
-	APIKey   string            `json:"api_key"`
-	Label    string            `json:"label"`
-	ProxyURL string            `json:"proxy_url"`
-	BaseURL  string            `json:"base_url"`
-	Filename string            `json:"filename"`
-	Group    string            `json:"group"`
-	ModelMap map[string]string `json:"model_map"`
+	Provider      string            `json:"provider"` // "anthropic" | "openai"; empty = anthropic
+	APIKey        string            `json:"api_key"`
+	Label         string            `json:"label"`
+	ProxyURL      string            `json:"proxy_url"`
+	BaseURL       string            `json:"base_url"`
+	Filename      string            `json:"filename"`
+	Group         string            `json:"group"`
+	ModelMap      map[string]string `json:"model_map"`
+	AllowedModels []string          `json:"allowed_models"`
 }
 
 func (h *Handler) handleCreateAPIKey(c *gin.Context) {
@@ -1268,6 +1284,9 @@ func (h *Handler) handleCreateAPIKey(c *gin.Context) {
 	}
 	if g := auth.NormalizeGroup(body.Group); g != "" {
 		raw["group"] = g
+	}
+	if models := auth.NormalizeAllowedModels(body.AllowedModels); len(models) > 0 {
+		raw["allowed_models"] = models
 	}
 	if len(body.ModelMap) > 0 {
 		mm := make(map[string]any, len(body.ModelMap))

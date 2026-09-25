@@ -1206,7 +1206,7 @@ func codexStallRelaxer(r any, d time.Duration) func() {
 	return func() {}
 }
 
-func streamSSECodexBackend(c *gin.Context, resp *http.Response, counts *usage.Counts, commit func()) codexStreamResult {
+func streamSSECodexBackend(c *gin.Context, resp *http.Response, counts *usage.Counts, commit func(), rewriteModel ...string) codexStreamResult {
 	flusher, _ := c.Writer.(http.Flusher)
 	reader := newLineReader(resp.Body)
 	var output codexoauth.OutputAccumulator
@@ -1282,6 +1282,9 @@ func streamSSECodexBackend(c *gin.Context, resp *http.Response, counts *usage.Co
 					payload := bytes.TrimSpace(trim[5:])
 					if len(payload) > 0 && payload[0] == '{' {
 						repaired := output.Observe(payload)
+						if len(rewriteModel) > 0 && rewriteModel[0] != "" {
+							repaired = rewriteResponseModel(repaired, rewriteModel[0])
+						}
 						if !bytes.Equal(repaired, payload) {
 							line = append(append([]byte("data: "), repaired...), line[len(trim):]...)
 							trim = bytes.TrimRight(line, "\r\n")

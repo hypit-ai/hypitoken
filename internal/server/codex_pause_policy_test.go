@@ -12,22 +12,14 @@ import (
 	"github.com/wjsoj/cc-core/auth"
 )
 
-func TestCodexExplicitFailuresOnlyKeepsModelFailureRoutable(t *testing.T) {
+func TestCodexExplicitFailuresOnlyCannotBypassManualRecoveryPolicy(t *testing.T) {
 	s := &Server{}
-	a := &auth.Auth{ID: "model-relay", Kind: auth.KindAPIKey, Provider: auth.ProviderOpenAI, ExplicitFailuresOnly: true}
-	for i := 0; i < 20; i++ {
-		s.reportCodexAPIKeyFault(a, 503, time.Time{}, []byte(`{"error":{"code":"model_not_found","message":"No available channel for model gpt-5.6-terra"}}`))
-		s.reportCodexAPIKeyFault(a, 502, time.Time{})
+	a := &auth.Auth{ID: "relay", Kind: auth.KindAPIKey, Provider: auth.ProviderOpenAI, ExplicitFailuresOnly: true}
+	for i := 0; i < 3; i++ {
+		s.reportCodexAPIKeyFault(a, 503, time.Time{})
 	}
-	if !a.IsHealthy() {
-		t.Fatal("ambiguous model/transport errors paused the whole relay")
-	}
-	if until, strikes := a.QuarantineSnapshot(); !until.IsZero() || strikes != 0 {
-		t.Fatal("ambiguous failures accumulated breaker strikes")
-	}
-	s.reportCodexAPIKeyFault(a, 403, time.Time{}, []byte(`{"error":{"message":"insufficient account balance"}}`))
-	if !a.IsQuarantined(time.Now()) {
-		t.Fatal("explicit balance failure did not pause")
+	if !a.Snapshot().Disabled {
+		t.Fatal("legacy pause opt-out must not keep a repeatedly failing key routable")
 	}
 }
 
@@ -39,7 +31,7 @@ func TestCodexPausePolicyClassifiesCompressedUpstreamErrors(t *testing.T) {
 		pause  bool
 	}{
 		{"model unavailable", 503, `{"error":{"code":"model_not_found","message":"No available channel for model"}}`, false},
-		{"ambiguous forbidden", 403, `{"error":{"message":"upstream unavailable"}}`, false},
+		{"ambiguous forbidden", 403, `{"error":{"message":"upstream unavailable"}}`, true},
 		{"explicit balance", 403, `{"error":{"message":"insufficient account balance"}}`, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -67,8 +59,8 @@ func TestCodexPausePolicyClassifiesCompressedUpstreamErrors(t *testing.T) {
 					t.Fatalf("failed request must remain retryable: retry=%v done=%v", retry, done)
 				}
 			}
-			if paused := a.IsQuarantined(time.Now()); paused != tc.pause {
-				t.Fatalf("paused=%v want %v", paused, tc.pause)
+			if a.Snapshot().Disabled != tc.pause {
+				t.Fatalf("disabled=%v want %v", a.Snapshot().Disabled, tc.pause)
 			}
 		})
 	}

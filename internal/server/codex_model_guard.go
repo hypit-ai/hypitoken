@@ -2,7 +2,10 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"math/rand/v2"
+	"net/http"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -176,6 +179,27 @@ type codexModelReject struct {
 
 // guardCodexModel decides how to route a requested Codex model, or refuses it.
 func (s *Server) guardCodexModel(model string) codexModelRoute {
+	if s.apiKeyOnlyConfigured(model) {
+		// Explicit operator configuration supersedes catalog inference. A
+		// denied model must fail quickly, not probe a list or try OAuth.
+		for id, info := range s.pool.LabelIndex() {
+			if info.Kind != auth.KindAPIKey {
+				continue
+			}
+			a := s.pool.FindByID(id)
+			if a == nil {
+				continue
+			}
+			snap := a.Snapshot()
+			if auth.NormalizeProvider(snap.Provider) == auth.ProviderOpenAI && !snap.Disabled && a.AcceptsModel(model) {
+				return codexModelRoute{apiKeyOnly: true}
+			}
+		}
+		return codexModelRoute{reject: &codexModelReject{
+			Status: http.StatusServiceUnavailable, Code: "model_temporarily_unavailable",
+			Message: fmt.Sprintf("No enabled API-key channel is configured to serve model %s.", model), Model: model,
+		}}
+	}
 	if model == "" || model == "unknown" {
 		return codexModelRoute{}
 	}
@@ -420,4 +444,8 @@ func sleepCtx(ctx context.Context, d time.Duration) bool {
 	case <-t.C:
 		return true
 	}
+}
+
+func (s *Server) apiKeyOnlyConfigured(model string) bool {
+	return s.cfg != nil && slices.Contains(s.cfg.OpenAIAPIKeyOnlyModels, model)
 }

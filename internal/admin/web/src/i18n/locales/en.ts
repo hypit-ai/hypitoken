@@ -983,6 +983,11 @@ export default {
       removed: "Removed",
       confirmRemove: 'Remove credential "{{name}}"?',
       maxConcurrent: "Max concurrent",
+      allowedModelsLabel: "Allowed models (API keys only)",
+      allowedModelsHint:
+        "One model per line, or separate with commas. Leave blank for no restriction. Listed names must match the requested model exactly, before model mapping.",
+      allowedModelsCount: "Restricted to {{count}} models",
+      allowedModelsAny: "All models allowed",
       modelMapLabel: "Model map (optional, JSON)",
       modelMapHint: "Rewrite requested model → upstream model, e.g. route opus to a cheaper tier.",
       modelMapParseError: "model_map JSON parse failed: {{msg}}",

@@ -412,7 +412,16 @@ func (s *Server) doForwardCodex(c *gin.Context, a *auth.Auth, path string, body 
 	upstreamBody = normalizedBody
 
 	ctx := c.Request.Context()
-	upReq, err := http.NewRequestWithContext(ctx, http.MethodPost, upURL, bytes.NewReader(upstreamBody))
+	attemptCtx := ctx
+	commitAttempt := func() {}
+	// Non-streaming responses and compaction can legitimately need the full
+	// turn to produce their first byte. Only bound silent streaming attempts.
+	if stream && path != "/v1/responses/compact" {
+		var finishAttempt func()
+		attemptCtx, commitAttempt, finishAttempt = apiKeyAttemptContext(ctx, apiKeyPreOutputTimeout)
+		defer finishAttempt()
+	}
+	upReq, err := http.NewRequestWithContext(attemptCtx, http.MethodPost, upURL, bytes.NewReader(upstreamBody))
 	if err != nil {
 		writeAPIError(c, auth.ProviderOpenAI, APIError{Status: http.StatusInternalServerError, Code: "request_preparation_failed", Message: "The request could not be prepared. Please try again."})
 		return false, true
@@ -452,6 +461,7 @@ func (s *Server) doForwardCodex(c *gin.Context, a *auth.Auth, path string, body 
 		return true, false
 	}
 
+	defer resp.Body.Close()
 	// Retryable fault (throttle / overload / gateway down / this key rejected):
 	// don't relay it. Read+discard the body, report the fault so the breaker
 	// can pause the relay, and roll back to the loop to try the next
@@ -470,7 +480,16 @@ func (s *Server) doForwardCodex(c *gin.Context, a *auth.Auth, path string, body 
 		_ = resp.Body.Close()
 		snippet := truncate(errBody, 500)
 		log.Warnf("codex proxy(apikey): %s returned %d — rotating to next credential. body=%s", a.ID, resp.StatusCode, snippet)
-		s.reportCodexAPIKeyFault(a, resp.StatusCode, parseRetryAfter(resp.Header), errBody)
+		c.Set(codexDeferredResponseContextKey, &deferredResponse{
+			status: resp.StatusCode, header: resp.Header.Clone(), body: errBody,
+			authID: a.ID, authLabel: a.Label, authKind: "apikey",
+		})
+		if apiKeyModelUnavailable(errBody) {
+			a.MarkModelRateLimited(apiKeyModelScope(model), time.Now().Add(10*time.Minute))
+			log.Warnf("codex proxy(apikey): skipping %s for model %s for 10 minutes; other models remain eligible", a.ID, model)
+		} else {
+			s.reportCodexAPIKeyFault(a, resp.StatusCode, parseRetryAfter(resp.Header))
+		}
 		s.emitLog(requestlog.Record{
 			Client: clientName, ClientToken: maskClientToken(clientToken),
 			Provider: auth.ProviderOpenAI, AuthID: a.ID, AuthLabel: a.Label, AuthKind: "apikey",
@@ -481,6 +500,8 @@ func (s *Server) doForwardCodex(c *gin.Context, a *auth.Auth, path string, body 
 		})
 		return true, false
 	}
+
+	ccstream.Decompress(resp)
 
 	// Observe original bytes before protocol conversion or response scrubbing.
 	tierObserver := servicetier.ObserveBody(resp.Body)
@@ -506,6 +527,21 @@ func (s *Server) doForwardCodex(c *gin.Context, a *auth.Auth, path string, body 
 	switch {
 	case resp.StatusCode >= 400:
 		errBody, _ := io.ReadAll(resp.Body)
+		if apiKeyModelUnavailable(errBody) {
+			a.MarkModelRateLimited(apiKeyModelScope(model), time.Now().Add(10*time.Minute))
+			c.Set(codexDeferredResponseContextKey, &deferredResponse{
+				status: resp.StatusCode, header: resp.Header.Clone(), body: errBody,
+				authID: a.ID, authLabel: a.Label, authKind: "apikey",
+			})
+			s.emitLog(requestlog.Record{
+				Client: clientName, ClientToken: maskClientToken(clientToken),
+				Provider: auth.ProviderOpenAI, AuthID: a.ID, AuthLabel: a.Label, AuthKind: "apikey",
+				Model: model, Stream: stream, Path: path, Status: resp.StatusCode,
+				DurationMs: time.Since(start).Milliseconds(), Attempts: attempts,
+				Error: "upstream model unavailable", AttemptOnly: true,
+			})
+			return true, false
+		}
 		errSnippet = truncate(errBody, 500)
 		log.Warnf("codex proxy(apikey): %s returned %d — body=%s", a.ID, resp.StatusCode, errSnippet)
 		copySafeRetryHeaders(c, resp.Header)
@@ -521,7 +557,8 @@ func (s *Server) doForwardCodex(c *gin.Context, a *auth.Auth, path string, body 
 		switch {
 		case stream && responseIsSSE(resp.Header, br):
 			var clientGone bool
-			if bridged {
+			switch {
+			case bridged:
 				// Bridged stream: the upstream speaks Responses SSE and the
 				// client asked for chat.completion.chunk. Usage is read off the
 				// raw upstream events inside the translator, so billing matches
@@ -532,9 +569,9 @@ func (s *Server) doForwardCodex(c *gin.Context, a *auth.Auth, path string, body 
 				//
 				// Commits lazily, so a shed arriving before any output leaves
 				// the response uncommitted and can be retried elsewhere.
-				res := streamCodexAsChatCompletions(c, br, &counts, model, chatStreamWantsUsage(body), func() { writeSSEResponseHeaders(c, resp) })
+				res := streamCodexAsChatCompletions(c, br, &counts, model, chatStreamWantsUsage(body), func() { commitAttempt(); markCommitted(c); writeSSEResponseHeaders(c, resp) })
 				firstOutputAt = res.firstOutputAt
-				if res.shed != "" {
+				if res.shed != "" || (!res.wroteAny && !res.sawTerminal && !isClientDisconnect(ctx, res.err)) {
 					// Not a byte has reached the client, so this turn is still
 					// fully recoverable on another credential. Without this the
 					// translation would have rendered the shed as an empty but
@@ -543,6 +580,13 @@ func (s *Server) doForwardCodex(c *gin.Context, a *auth.Auth, path string, body 
 					_ = resp.Body.Close()
 					log.Warnf("codex proxy(apikey): %s shed the bridged stream before any output: %s — rotating to next credential", a.ID, res.shed)
 					s.reportCodexAPIKeyFault(a, http.StatusServiceUnavailable, time.Time{})
+					s.emitLog(requestlog.Record{
+						Client: clientName, ClientToken: maskClientToken(clientToken),
+						Provider: auth.ProviderOpenAI, AuthID: a.ID, AuthLabel: a.Label, AuthKind: "apikey",
+						Model: model, Stream: stream, Path: path, Status: http.StatusServiceUnavailable,
+						DurationMs: time.Since(start).Milliseconds(), Attempts: attempts,
+						Error: "upstream bridged response failed before output", AttemptOnly: true,
+					})
 					return true, false
 				}
 				if res.demoted.shed {
@@ -554,7 +598,37 @@ func (s *Server) doForwardCodex(c *gin.Context, a *auth.Auth, path string, body 
 					log.Warnf("codex proxy(apikey): bridged SSE ended before terminal event via %s: %v", a.ID, res.err)
 					streamTruncated = true
 				}
-			} else {
+			case path == "/v1/responses":
+				// The native Responses route needs the same pre-output
+				// withholding as OAuth: an opener is not a usable answer.
+				relayResp := *resp
+				relayResp.Body = io.NopCloser(br)
+				res := streamSSECodexBackend(c, &relayResp, &counts, func() {
+					commitAttempt()
+					markCommitted(c)
+					writeSSEResponseHeaders(c, resp)
+				}, rewriteClientModel)
+				firstOutputAt = res.firstOutputAt
+				clientGone = !res.sawTerminal && isClientDisconnect(ctx, res.err)
+				if !res.wroteAny && !clientGone && (!res.sawTerminal || res.shed != "") {
+					_ = resp.Body.Close()
+					s.reportCodexAPIKeyFault(a, http.StatusBadGateway, time.Time{})
+					s.emitLog(requestlog.Record{
+						Client: clientName, ClientToken: maskClientToken(clientToken),
+						Provider: auth.ProviderOpenAI, AuthID: a.ID, AuthLabel: a.Label, AuthKind: "apikey",
+						Model: model, Stream: stream, Path: path, Status: 502,
+						DurationMs: time.Since(start).Milliseconds(), Attempts: attempts,
+						Error: "upstream Responses stream failed before output", AttemptOnly: true,
+					})
+					return true, false
+				}
+				streamTruncated = !res.sawTerminal && !clientGone
+				if res.demoted.shed {
+					shedLabel = shedTurnLabel(res.demoted.capacity)
+				}
+			default:
+				commitAttempt()
+				markCommitted(c)
 				writeSSEResponseHeaders(c, resp)
 				sse := streamSSEOpenAI(c, br, &counts, rewriteClientModel)
 				firstOutputAt = sse.firstOutputAt
@@ -617,6 +691,13 @@ func (s *Server) doForwardCodex(c *gin.Context, a *auth.Auth, path string, body 
 					_ = resp.Body.Close()
 					log.Warnf("codex proxy(apikey): %s shed the bridged non-stream request: %s — rotating to next credential", a.ID, aggShed)
 					s.reportCodexAPIKeyFault(a, http.StatusServiceUnavailable, time.Time{})
+					s.emitLog(requestlog.Record{
+						Client: clientName, ClientToken: maskClientToken(clientToken),
+						Provider: auth.ProviderOpenAI, AuthID: a.ID, AuthLabel: a.Label, AuthKind: "apikey",
+						Model: model, Stream: stream, Path: path, Status: http.StatusServiceUnavailable,
+						DurationMs: time.Since(start).Milliseconds(), Attempts: attempts,
+						Error: "upstream bridged response failed before output", AttemptOnly: true,
+					})
 					return true, false
 				}
 				if aerr != nil {
@@ -642,7 +723,7 @@ func (s *Server) doForwardCodex(c *gin.Context, a *auth.Auth, path string, body 
 						Client: clientName, ClientToken: maskClientToken(clientToken),
 						Provider: auth.ProviderOpenAI, AuthID: a.ID, AuthLabel: a.Label, AuthKind: "apikey",
 						Model: model, Stream: stream, Path: path, Status: http.StatusBadGateway,
-						DurationMs: time.Since(start).Milliseconds(), Attempts: attempts, Error: aerr.Error(),
+						DurationMs: time.Since(start).Milliseconds(), Attempts: attempts, Error: aerr.Error(), AttemptOnly: true,
 					})
 					return true, false
 				}
@@ -662,7 +743,7 @@ func (s *Server) doForwardCodex(c *gin.Context, a *auth.Auth, path string, body 
 					Client: clientName, ClientToken: maskClientToken(clientToken),
 					Provider: auth.ProviderOpenAI, AuthID: a.ID, AuthLabel: a.Label, AuthKind: "apikey",
 					Model: model, Stream: stream, Path: path, Status: http.StatusBadGateway,
-					DurationMs: time.Since(start).Milliseconds(), Attempts: attempts, Error: usage.MissingUsageError,
+					DurationMs: time.Since(start).Milliseconds(), Attempts: attempts, Error: usage.MissingUsageError, AttemptOnly: true,
 				})
 				return true, false
 			}
@@ -674,7 +755,7 @@ func (s *Server) doForwardCodex(c *gin.Context, a *auth.Auth, path string, body 
 					Client: clientName, ClientToken: maskClientToken(clientToken),
 					Provider: auth.ProviderOpenAI, AuthID: a.ID, AuthLabel: a.Label, AuthKind: "apikey",
 					Model: model, Stream: stream, Path: path, Status: http.StatusBadGateway,
-					DurationMs: time.Since(start).Milliseconds(), Attempts: attempts, Error: cerr.Error(),
+					DurationMs: time.Since(start).Milliseconds(), Attempts: attempts, Error: cerr.Error(), AttemptOnly: true,
 				})
 				return true, false
 			}
@@ -686,25 +767,38 @@ func (s *Server) doForwardCodex(c *gin.Context, a *auth.Auth, path string, body 
 			c.Writer.WriteHeader(http.StatusOK)
 			_, _ = c.Writer.Write(converted)
 		default:
-			respBody, _ := io.ReadAll(br)
+			var respBody []byte
+			var readErr error
+			if path == "/v1/responses" && responseIsSSE(resp.Header, br) {
+				var shed string
+				respBody, shed, readErr = aggregateCodexResponseStream(br, &counts)
+				if shed != "" {
+					readErr = fmt.Errorf("upstream shed response: %s", shed)
+				}
+			} else {
+				respBody, readErr = io.ReadAll(br)
+			}
+			if readErr != nil && isClientDisconnect(ctx, readErr) {
+				return false, true
+			}
 			if rewriteClientModel != "" {
 				respBody = rewriteResponseModel(respBody, rewriteClientModel)
 			}
 			parsed := extractOpenAIUsageFromJSON(respBody)
-			if usage.MissingUsage(parsed) {
+			if readErr != nil || usage.MissingUsage(parsed) {
 				_ = resp.Body.Close()
-				log.Warnf("codex proxy(apikey): %s returned success without usage on non-stream response; failing closed", a.ID)
+				log.Warnf("codex proxy(apikey): %s returned success without usage on non-stream response; rotating to next credential", a.ID)
 				s.reportCodexAPIKeyFault(a, http.StatusBadGateway, time.Time{})
-				writeAPIError(c, auth.ProviderOpenAI, APIError{Status: http.StatusBadGateway, Code: "service_response_error", Message: "The model service returned an incomplete response. Please try again."})
 				s.emitLog(requestlog.Record{
 					Client: clientName, ClientToken: maskClientToken(clientToken),
 					Provider: auth.ProviderOpenAI, AuthID: a.ID, AuthLabel: a.Label, AuthKind: "apikey",
 					Model: model, Stream: stream, Path: path, Status: http.StatusBadGateway,
-					DurationMs: time.Since(start).Milliseconds(), Attempts: attempts, Error: usage.MissingUsageError,
+					DurationMs: time.Since(start).Milliseconds(), Attempts: attempts, Error: usage.MissingUsageError, AttemptOnly: true,
 				})
-				return false, true
+				return true, false
 			}
 			writeResponseHeaders(c, resp)
+			c.Writer.Header().Set("Content-Type", "application/json")
 			_, _ = c.Writer.Write(respBody)
 			mergeCodexUsage(&counts, parsed)
 		}
@@ -717,11 +811,12 @@ func (s *Server) doForwardCodex(c *gin.Context, a *auth.Auth, path string, body 
 	// What reaches here with a >=400 status is a client-side fault (400, 404,
 	// 422 …), which by design leaves credential health untouched.
 	//
-	// A client cancellation is a success for the credential: it served bytes
-	// until the caller stopped listening. Only StreamUpstreamNoUsage withholds
-	// MarkSuccess, and it has already reported the fault above.
-	if resp.StatusCode < 400 && !outcome.CredentialFault() {
-		a.MarkSuccess()
+	// Only a complete, accounted-for answer breaks a failure run. Cancellation
+	// is neutral; truncation and an in-band upstream error are still failures.
+	if resp.StatusCode < 400 && !outcome.CredentialFault() && !streamTruncated && shedLabel == "" && outcome != usage.StreamClientCanceled {
+		s.recordAPIKeySuccess(a)
+	} else if resp.StatusCode < 400 && !outcome.CredentialFault() && outcome != usage.StreamClientCanceled && (streamTruncated || shedLabel != "") {
+		s.reportCodexAPIKeyFault(a, http.StatusBadGateway, time.Time{})
 	}
 
 	// CostUSD = official upstream price, BilledUSD = wallet debit.
@@ -804,47 +899,10 @@ func (s *Server) doForwardCodex(c *gin.Context, a *auth.Auth, path string, body 
 	return false, true
 }
 
-// reportCodexAPIKeyFault records an upstream failure on a Codex API-key relay
-// so the pool stops selecting it while it is broken.
-//
-// This used to hand a 5xx to MarkFailure *plus* a fixed 45s MarkQuotaExceeded.
-// The quota call was a workaround, not an intent: MarkFailure alone could not
-// take an API key out of rotation (IsHealthy skipped the consecutive-failure
-// heuristic for KindAPIKey), and the quota cooldown was the only lever
-// IsHealthy honoured — at the cost of reporting an upstream 5xx to operators
-// as "quota exceeded", and of a flat interval that both over-reacted to a
-// one-off 502 and under-reacted to a permanently dead relay by re-probing it
-// every 45s forever.
-//
-// cc-core's API-key circuit breaker removes that constraint, so the classes
-// now map onto shared machinery:
-//
-//	429            → the pool's throttling path (Retry-After aware, growing
-//	                 backoff) — kept, because a rate limit is the one case
-//	                 where the upstream tells us how long to wait
-//	401/402/403    → MarkHardFailure: definitive, pauses on the first strike
-//	5xx/transport/ → MarkFailure: pauses after a few in a row, then backs off
-//	contract        exponentially and probes itself back in
-//
-// ExplicitFailuresOnly relays skip ambiguous failures before this mapping.
-// None of these retire the channel; every pause expires on its own.
-func (s *Server) reportCodexAPIKeyFault(a *auth.Auth, status int, resetAt time.Time, body ...[]byte) {
-	var payload []byte
-	if len(body) > 0 {
-		payload = body[0]
-	}
-	if !a.ShouldPauseForAPIKeyError(status, payload) {
-		return
-	}
-	if status == http.StatusTooManyRequests {
-		s.pool.ReportUpstreamError(a, status, resetAt)
-		return
-	}
-	if classifyUpstreamStatus(status) == faultCredential {
-		a.MarkHardFailure(fmt.Sprintf("upstream %d", status))
-		return
-	}
-	a.MarkFailure(fmt.Sprintf("upstream %d", status))
+// reportCodexAPIKeyFault counts every retryable upstream failure, including
+// faults on legacy explicit_failures_only channels. Client errors never call it.
+func (s *Server) reportCodexAPIKeyFault(a *auth.Auth, status int, resetAt time.Time) {
+	s.recordAPIKeyFailure(a, status, resetAt, fmt.Sprintf("upstream %d", status))
 }
 
 // shedTurnLabel renders the request-log tag for a turn upstream refused. Both

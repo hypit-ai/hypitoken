@@ -51,6 +51,7 @@ export interface AuthRow {
   last_client_cancel?: string;
   client_cancel_reason?: string;
   model_map?: Record<string, string>;
+  allowed_models?: string[];
   usage?: UsageSummary;
   codex_rate_limits?: Record<string, string>;
   codex_rate_limits_at?: string;
