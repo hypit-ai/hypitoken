@@ -36,7 +36,9 @@ type endpoint struct {
 }
 
 type Server struct {
-	apiKeyHealthMu sync.Mutex // serializes API-key success/failure accounting and disable persistence
+	apiKeyHealthMu sync.Mutex // serializes health accounting and half-open probe admission
+	apiKeyProbes   map[*auth.Auth]bool
+	apiKeyRecovery map[*auth.Auth]bool
 
 	cfg     *config.Config
 	pool    *auth.Pool

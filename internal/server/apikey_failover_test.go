@@ -78,7 +78,7 @@ func TestAPIKeyContractViolationIsWithheldAndRetried(t *testing.T) {
 // the circuit breaker: a relay that keeps answering 200-with-HTML must
 // eventually be taken out of rotation, so traffic rotates onto another key
 // instead of re-paying a doomed upstream round-trip on every single request.
-// Three consecutive faults disable the channel until explicit manual recovery.
+// Three consecutive faults pause the channel until the next recovery probe.
 func TestAPIKeyRepeatedFaultsPauseTheChannel(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -108,11 +108,11 @@ func TestAPIKeyRepeatedFaultsPauseTheChannel(t *testing.T) {
 		t.Fatal("a paused channel must read unhealthy so the pool routes around it")
 	}
 	if cred.IsHardFailed() {
-		t.Fatal("API-key retirement must use Disabled, not the OAuth hard-failure flag")
+		t.Fatal("API-key failures must never set the OAuth hard-failure flag")
 	}
 	cred.IsQuarantined(until.Add(time.Second))
-	if !cred.Snapshot().Disabled || cred.IsHealthy() {
-		t.Fatal("cooldown expiry must not restore an automatically disabled channel")
+	if cred.Snapshot().Disabled || !cred.IsHealthy() {
+		t.Fatal("cooldown expiry must admit an automatic recovery probe")
 	}
 }
 
@@ -173,10 +173,10 @@ func TestAPIKeyUpstreamFaultCountsTowardHealth(t *testing.T) {
 	if !retry || deferred == nil || deferred.status != http.StatusTooManyRequests {
 		t.Fatalf("a 429 must be withheld and retried; got retry=%v deferred=%+v", retry, deferred)
 	}
-	if _, _, _, consecutive := cred.HealthSnapshot(); consecutive != 1 {
-		t.Fatalf("ConsecutiveFailures = %d, want 1 — throttling is an upstream fault and must be visible to operators", consecutive)
+	if report := cred.HealthState(); report.Consecutive429s != 1 || report.ConsecutiveFailures != 0 {
+		t.Fatalf("throttling should have its own counter: %+v", report)
 	}
-	// A single throttle counts once but does not reach the disable threshold.
+	// A single throttle counts once and must never permanently disable the key.
 	if _, hardFailed, _, _ := cred.HealthSnapshot(); hardFailed {
 		t.Fatal("an API-key credential must never be auto-hard-failed")
 	}

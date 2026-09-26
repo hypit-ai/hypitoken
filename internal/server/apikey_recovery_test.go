@@ -2,12 +2,14 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -17,7 +19,7 @@ import (
 	"github.com/wjsoj/cc-core/usage"
 )
 
-func TestAPIKeyAutoDisablePersistsAndCannotBeLastResort(t *testing.T) {
+func TestAPIKeyFaultsBackOffWithoutPersistingDisable(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "key.json")
 	data := []byte(`{"type":"openai_api_key","provider":"openai","api_key":"test-only","label":"broken"}`)
 	if err := os.WriteFile(p, data, 0600); err != nil {
@@ -28,18 +30,20 @@ func TestAPIKeyAutoDisablePersistsAndCannotBeLastResort(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := &Server{pool: auth.NewPool(nil, []*auth.Auth{a}, time.Minute, false, "")}
-	// Mixed upstream failures belong to the same consecutive failure run.
-	for _, status := range []int{502, 429, 401} {
-		s.reportCodexAPIKeyFault(a, status, time.Time{})
+	oldStart := time.Now()
+	for i := 0; i < 3; i++ {
+		s.reportCodexAPIKeyFault(a, 502, time.Time{})
 	}
-	a.IsQuarantined(time.Now().Add(24 * time.Hour))
-	a.ClearQuota()
-	s.recordAPIKeySuccess(a) // late in-flight success must not revive it
-	if !a.Snapshot().Disabled {
-		t.Fatal("key revived without manual enable")
+	first, strikes := a.QuarantineSnapshot()
+	if strikes != 1 || time.Until(first) < 7*time.Second {
+		t.Fatal("missing initial backoff")
 	}
-	if got := s.pool.AcquireWithOptions(context.Background(), auth.ProviderOpenAI, "client", "", "gpt-6-sol", "s", auth.AcquireOptions{AllowAPIKeyFallback: true}); got != nil {
-		t.Fatal("last-resort scheduler selected disabled API key")
+	s.recordAPIKeySuccess(a, oldStart)
+	if a.HealthState().State != auth.HealthCooling {
+		t.Fatal("late success cleared the pause")
+	}
+	if release, _ := s.beginAPIKeyAttempt(a); release != nil {
+		t.Fatal("paused channel admitted")
 	}
 	persisted, err := os.ReadFile(p)
 	if err != nil {
@@ -49,8 +53,53 @@ func TestAPIKeyAutoDisablePersistsAndCannotBeLastResort(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reloaded.Snapshot().Disabled {
-		t.Fatal("restart lost disabled state")
+	if reloaded.Snapshot().Disabled || a.Snapshot().Disabled {
+		t.Fatal("transient failure persisted a manual disable")
+	}
+	a.IsQuarantined(first.Add(time.Second))
+	release, _ := s.beginAPIKeyAttempt(a)
+	if release == nil {
+		t.Fatal("pause expiry did not permit a probe")
+	}
+	if extra, _ := s.beginAPIKeyAttempt(a); extra != nil {
+		t.Fatal("concurrent recovery probe admitted")
+	}
+	s.reportCodexAPIKeyFault(a, 502, time.Time{})
+	release()
+	second, strikes := a.QuarantineSnapshot()
+	if strikes != 2 || time.Until(second) < 23*time.Second {
+		t.Fatal("failed probe did not increase backoff")
+	}
+	a.IsQuarantined(second.Add(time.Second))
+	release, _ = s.beginAPIKeyAttempt(a)
+	if release == nil {
+		t.Fatal("second probe not admitted")
+	}
+	s.recordAPIKeySuccess(a, time.Now())
+	release()
+	if a.HealthState().State != auth.HealthHealthy {
+		t.Fatal("successful probe did not recover")
+	}
+	for i := 0; i < 3; i++ {
+		s.reportCodexAPIKeyFault(a, 502, time.Time{})
+	}
+	_, strikes = a.QuarantineSnapshot()
+	if strikes != 1 {
+		t.Fatal("recovery did not reset backoff")
+	}
+}
+
+func TestAPIKeyManualDisableSurvivesSuccessAndExpiry(t *testing.T) {
+	s := &Server{}
+	a := codexAPIKeyCred("manual")
+	for i := 0; i < 3; i++ {
+		s.reportCodexAPIKeyFault(a, 502, time.Time{})
+	}
+	a.SetDisabled(true)
+	a.IsQuarantined(time.Now().Add(24 * time.Hour))
+	s.recordAPIKeySuccess(a, time.Now())
+	if release, _ := s.beginAPIKeyAttempt(a); release != nil || !a.Snapshot().Disabled {
+		t.Fatal("manual disable was overridden")
 	}
 }
 
@@ -60,16 +109,48 @@ func TestAPIKeySuccessBreaksFailureRun(t *testing.T) {
 	for i := 0; i < 2; i++ {
 		s.reportCodexAPIKeyFault(a, 502, time.Time{})
 	}
-	s.recordAPIKeySuccess(a)
+	s.recordAPIKeySuccess(a, time.Now())
 	for i := 0; i < 2; i++ {
 		s.reportCodexAPIKeyFault(a, 502, time.Time{})
 	}
-	if a.Snapshot().Disabled {
-		t.Fatal("non-consecutive errors disabled a working key")
+	if a.IsQuarantined(time.Now()) {
+		t.Fatal("non-consecutive failures paused a working key")
 	}
 	s.reportCodexAPIKeyFault(a, 502, time.Time{})
-	if !a.Snapshot().Disabled {
-		t.Fatal("third consecutive failure did not disable key")
+	if !a.IsQuarantined(time.Now()) || a.Snapshot().Disabled {
+		t.Fatal("third failure must pause, not disable")
+	}
+}
+
+func TestAPIKey429HonorsRetryAfterWithoutDoubleCounting(t *testing.T) {
+	a := codexAPIKeyCred("limited")
+	s := &Server{pool: auth.NewPool(nil, []*auth.Auth{a}, time.Minute, false, "")}
+	until := time.Now().Add(17 * time.Second)
+	s.reportCodexAPIKeyFault(a, 429, until)
+	report := a.HealthState()
+	if report.Consecutive429s != 1 || report.ConsecutiveFailures != 0 || report.QuarantineStrikes != 0 {
+		t.Fatalf("429 counted as generic failure: %+v", report)
+	}
+	if release, wait := s.beginAPIKeyAttempt(a); release != nil || wait < 16*time.Second {
+		t.Fatal("Retry-After bypassed")
+	}
+}
+
+func TestAPIKeyPausedChannelCannotBeUsedAsLastResort(t *testing.T) {
+	var hits atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { hits.Add(1); w.WriteHeader(500) }))
+	defer upstream.Close()
+	a := codexAPIKeyCred("paused")
+	s := codexAPIKeyTestServer(upstream.URL)
+	s.pool = auth.NewPool(nil, []*auth.Auth{a}, time.Minute, false, "")
+	for i := 0; i < 3; i++ {
+		s.reportCodexAPIKeyFault(a, 502, time.Time{})
+	}
+	body := []byte(`{"model":"gpt-6-sol","input":"OK","stream":false}`)
+	c, w := newCodexContext(t, "/v1/responses", body)
+	s.forwardWithFailover(c, auth.ProviderOpenAI, "/v1/responses", "gpt-6-sol", "client", "", "client", "s", body, false, time.Now())
+	if hits.Load() != 0 || w.Code != 503 || w.Header().Get("Retry-After") == "" {
+		t.Fatalf("cooldown bypass: hits=%d status=%d retry=%s", hits.Load(), w.Code, w.Header().Get("Retry-After"))
 	}
 }
 
@@ -296,5 +377,103 @@ func TestAPIKeyCompletionDoesNotWaitForUpstreamClose(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("completed answer waited for upstream EOF")
+	}
+}
+
+func TestAPIKeyFailoverTriesEveryEligibleChannel(t *testing.T) {
+	var hits atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		if r.Header.Get("Authorization") != "Bearer sk-relay-last" {
+			w.WriteHeader(502)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"OK"}]}],"usage":{"input_tokens":10,"output_tokens":1}}`))
+	}))
+	defer upstream.Close()
+	var keys []*auth.Auth
+	for i := 0; i < 13; i++ {
+		keys = append(keys, codexAPIKeyCred(fmt.Sprint(i)))
+	}
+	keys = append(keys, codexAPIKeyCred("last"))
+	s := codexAPIKeyTestServer(upstream.URL)
+	s.pool = auth.NewPool(nil, keys, time.Minute, false, "")
+	body := []byte(`{"model":"gpt-6-sol","input":"OK","stream":false}`)
+	c, w := newCodexContext(t, "/v1/responses", body)
+	s.forwardWithFailover(c, auth.ProviderOpenAI, "/v1/responses", "gpt-6-sol", "client", "", "client", "s", body, false, time.Now())
+	if hits.Load() != 14 || w.Code != 200 || !strings.Contains(w.Body.String(), "OK") {
+		t.Fatalf("failover stopped early: hits=%d status=%d body=%s", hits.Load(), w.Code, w.Body.String())
+	}
+}
+
+func TestAPIKeyRecoveryGetsProbeWithoutBypassingRouting(t *testing.T) {
+	good, bad := codexAPIKeyCred("good"), codexAPIKeyCred("recovering")
+	s := &Server{pool: auth.NewPool(nil, []*auth.Auth{good, bad}, time.Minute, false, "")}
+	for i := 0; i < 3; i++ {
+		s.reportCodexAPIKeyFault(bad, 502, time.Time{})
+	}
+	until, _ := bad.QuarantineSnapshot()
+	opts := auth.AcquireOptions{AllowAPIKeyFallback: true, APIKeyOnly: true}
+	acquire := func(model string) *auth.Auth {
+		return s.acquireWithAPIKeyRecovery(context.Background(), auth.ProviderOpenAI, "client", "", model, "session", opts)
+	}
+	if acquire("gpt-6-sol") != good {
+		t.Fatal("cooling key displaced healthy channel")
+	}
+	bad.IsQuarantined(until.Add(time.Second))
+	if acquire("gpt-6-sol") != bad {
+		t.Fatal("healthy channel starved recovery probe")
+	}
+	release, _ := s.beginAPIKeyAttempt(bad)
+	if release == nil {
+		t.Fatal("probe not admitted")
+	}
+	if acquire("gpt-6-sol") != good {
+		t.Fatal("concurrent request did not prefer healthy channel")
+	}
+	release()
+	bad.SetAllowedModels([]string{"gpt-6-astra"})
+	if acquire("gpt-6-sol") != good {
+		t.Fatal("probe bypassed model allowlist")
+	}
+	bad.SetDisabled(true)
+	if acquire("gpt-6-astra") != good {
+		t.Fatal("probe bypassed manual disable")
+	}
+}
+
+func TestAPIKeyHalfOpenProbeAdmissionIsAtomic(t *testing.T) {
+	s := &Server{}
+	a := codexAPIKeyCred("recovering")
+	for i := 0; i < 3; i++ {
+		s.reportCodexAPIKeyFault(a, 502, time.Time{})
+	}
+	until, _ := a.QuarantineSnapshot()
+	a.IsQuarantined(until.Add(time.Second))
+	var wg sync.WaitGroup
+	releases := make(chan func(), 32)
+	for i := 0; i < 32; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if release, _ := s.beginAPIKeyAttempt(a); release != nil {
+				releases <- release
+			}
+		}()
+	}
+	wg.Wait()
+	close(releases)
+	if len(releases) != 1 {
+		t.Fatalf("admitted %d simultaneous probes", len(releases))
+	}
+	for release := range releases {
+		release()
+		release()
+	}
+	if release, _ := s.beginAPIKeyAttempt(a); release == nil {
+		t.Fatal("neutral cancellation left the probe stuck")
+	} else {
+		release()
 	}
 }

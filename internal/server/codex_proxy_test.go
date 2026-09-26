@@ -37,7 +37,7 @@ func TestCodexRetryableStatuses(t *testing.T) {
 // breaker replaced that workaround, so the assertion moves with it: the relay
 // is paused after a run of failures (not on the first, so a one-off 502 no
 // longer sidelines a working key), the pause reports as a quarantine rather
-// than as a misleading "quota exceeded". Three failures also persist Disabled.
+// than as a misleading "quota exceeded". The pause expires automatically.
 func TestCodexAPIKey5xxRunPausesRelay(t *testing.T) {
 	s := &Server{}
 	a := &auth.Auth{ID: "relay", Kind: auth.KindAPIKey, Provider: auth.ProviderOpenAI}
@@ -67,8 +67,8 @@ func TestCodexAPIKey5xxRunPausesRelay(t *testing.T) {
 	if a.IsQuarantined(until.Add(time.Second)) {
 		t.Fatal("the pause must expire on its own")
 	}
-	if !a.Snapshot().Disabled || a.IsHealthy() {
-		t.Fatal("three failures must leave the relay disabled after its cooldown expires")
+	if a.Snapshot().Disabled || !a.IsHealthy() {
+		t.Fatal("expired cooldown must allow a recovery probe without manual enable")
 	}
 }
 

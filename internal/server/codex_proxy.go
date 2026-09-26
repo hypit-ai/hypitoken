@@ -813,7 +813,7 @@ func (s *Server) doForwardCodex(c *gin.Context, a *auth.Auth, path string, body 
 	// Only a complete, accounted-for answer breaks a failure run. Cancellation
 	// is neutral; truncation and an in-band upstream error are still failures.
 	if resp.StatusCode < 400 && !outcome.CredentialFault() && !streamTruncated && shedLabel == "" && outcome != usage.StreamClientCanceled {
-		s.recordAPIKeySuccess(a)
+		s.recordAPIKeySuccess(a, dispatchAt)
 	} else if resp.StatusCode < 400 && !outcome.CredentialFault() && outcome != usage.StreamClientCanceled && (streamTruncated || shedLabel != "") {
 		s.reportCodexAPIKeyFault(a, http.StatusBadGateway, time.Time{})
 	}

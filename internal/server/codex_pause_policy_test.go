@@ -12,13 +12,13 @@ import (
 	"github.com/wjsoj/cc-core/auth"
 )
 
-func TestCodexExplicitFailuresOnlyCannotBypassManualRecoveryPolicy(t *testing.T) {
+func TestCodexExplicitFailuresOnlyCannotBypassBackoff(t *testing.T) {
 	s := &Server{}
 	a := &auth.Auth{ID: "relay", Kind: auth.KindAPIKey, Provider: auth.ProviderOpenAI, ExplicitFailuresOnly: true}
 	for i := 0; i < 3; i++ {
 		s.reportCodexAPIKeyFault(a, 503, time.Time{})
 	}
-	if !a.Snapshot().Disabled {
+	if !a.IsQuarantined(time.Now()) || a.Snapshot().Disabled {
 		t.Fatal("legacy pause opt-out must not keep a repeatedly failing key routable")
 	}
 }
@@ -59,8 +59,8 @@ func TestCodexPausePolicyClassifiesCompressedUpstreamErrors(t *testing.T) {
 					t.Fatalf("failed request must remain retryable: retry=%v done=%v", retry, done)
 				}
 			}
-			if a.Snapshot().Disabled != tc.pause {
-				t.Fatalf("disabled=%v want %v", a.Snapshot().Disabled, tc.pause)
+			if a.IsQuarantined(time.Now()) != tc.pause || a.Snapshot().Disabled {
+				t.Fatalf("paused=%v want %v; disabled=%v", a.IsQuarantined(time.Now()), tc.pause, a.Snapshot().Disabled)
 			}
 		})
 	}

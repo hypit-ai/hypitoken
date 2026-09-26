@@ -241,12 +241,13 @@ func (s *Server) forward(c *gin.Context, provider, path string) {
 // another healthy credential. The user only ever sees an error when the pool
 // has no slot left: excludeIDs narrows the candidate set each round so the
 // loop terminates naturally once Acquire returns nil (every healthy credential
-// tried). maxAttempts is only a backstop against a pathologically large
-// all-failing fleet. When every credential is exhausted, the most recent
+// tried). Only OAuth attempts have a count limit; API-key channels are
+// each tried once within the shared time budget. When every credential is exhausted, the most recent
 // withheld upstream error is replayed verbatim (e.g. a 429 + Retry-After)
 // instead of a synthetic 503, so clients back off correctly.
 func (s *Server) forwardWithFailover(c *gin.Context, provider, path, model, clientToken, clientGroup, clientName, slotID string, body []byte, stream bool, start time.Time) {
-	// How many credentials one request may burn.
+	// How many OAuth credentials one request may burn. API keys are bounded
+	// by the exclusion set and total time budget, not this count.
 	//
 	// Twelve for Anthropic, where a credential-level failure is usually a 429
 	// or a 401 and the next credential genuinely is a fresh roll of the dice.
@@ -266,9 +267,9 @@ func (s *Server) forwardWithFailover(c *gin.Context, provider, path, model, clie
 	//
 	// Latency is bounded by the failover deadline and the no-bytes watchdog
 	// above, which is the right place for it. The attempt count is not.
-	const maxAttempts = 12
+	const maxOAuthAttempts = 12
 	// A retry only helps while someone is still waiting for the answer.
-	// maxAttempts alone assumed attempts were cheap, which held while a
+	// A count limit alone assumed attempts were cheap, which held while a
 	// credential-level failure was an immediate 429 or 401. It stopped holding
 	// when the Codex WebSocket path learned to recognise a turn the backend
 	// parked: that attempt costs the whole stall budget before it sheds, and
@@ -331,7 +332,9 @@ func (s *Server) forwardWithFailover(c *gin.Context, provider, path, model, clie
 
 	tried := make(map[string]bool)
 	attempts := 0
+	oauthAttempts := 0
 	var lastDeferred *deferredResponse
+	var apiKeyRetryAfter time.Duration
 	// Seeded by the Codex ingress guard for a model only an API-key relay
 	// serves, so the loop never offers it to a subscription credential.
 	apiKeyOnly := c.GetBool(codexAPIKeyOnlyModelKey)
@@ -361,8 +364,8 @@ func (s *Server) forwardWithFailover(c *gin.Context, provider, path, model, clie
 		})
 	}
 
-	for attempt := 0; attempt < maxAttempts; attempt++ {
-		if attempt > 0 && time.Since(start) > failoverDeadline {
+	for attempt := 0; ; attempt++ {
+		if attempts > 0 && time.Since(start) > failoverDeadline {
 			log.Warnf("proxy: giving up after %s across %d credentials — past the failover deadline (model=%s)",
 				time.Since(start).Round(time.Second), attempts, model)
 			break
@@ -371,13 +374,16 @@ func (s *Server) forwardWithFailover(c *gin.Context, provider, path, model, clie
 		for id := range tried {
 			excludeIDs = append(excludeIDs, id)
 		}
-		a := s.pool.AcquireWithOptions(c.Request.Context(), provider, clientToken, clientGroup, model, slotID, auth.AcquireOptions{
+		a := s.acquireWithAPIKeyRecovery(c.Request.Context(), provider, clientToken, clientGroup, model, slotID, auth.AcquireOptions{
 			AllowAPIKeyFallback: true,
-			APIKeyOnly:          apiKeyOnly,
+			APIKeyOnly:          apiKeyOnly || oauthAttempts >= maxOAuthAttempts,
 			APIKeyRoundRobin:    provider == auth.ProviderOpenAI && s.apiKeyOnlyConfigured(model),
 			ExcludeIDs:          excludeIDs,
 		})
 		if a == nil {
+			if apiKeyRetryAfter > 0 {
+				c.Header("Retry-After", fmt.Sprint(int64((apiKeyRetryAfter+time.Second-1)/time.Second)))
+			}
 			// No healthy/untried credential left. If we withheld an upstream
 			// error on the way here, surface that genuine status; otherwise
 			// there was nothing in the pool to serve the request at all.
@@ -407,6 +413,9 @@ func (s *Server) forwardWithFailover(c *gin.Context, provider, path, model, clie
 			continue
 		}
 		attempts++
+		if a.Kind != auth.KindAPIKey {
+			oauthAttempts++
+		}
 		var preflightPrepared mimicry.BodyTransformResult
 
 		// OAuth preparation is entirely local and deterministic. Validate it
@@ -454,6 +463,20 @@ func (s *Server) forwardWithFailover(c *gin.Context, provider, path, model, clie
 			c.Set(claudePreparationAPIKeyFallbackKey, true)
 			preparationFallbackPending = false
 		}
+		var releaseProbe func()
+		if a.Kind == auth.KindAPIKey {
+			var wait time.Duration
+			releaseProbe, wait = s.beginAPIKeyAttempt(a)
+			if releaseProbe == nil {
+				if wait > 0 && (apiKeyRetryAfter == 0 || wait < apiKeyRetryAfter) {
+					apiKeyRetryAfter = wait
+				}
+				attempts--
+				attempt--
+				continue
+			}
+			defer releaseProbe() // also release on cancellation during retry handling
+		}
 
 		var retry, done bool
 		var deferred *deferredResponse
@@ -496,6 +519,9 @@ func (s *Server) forwardWithFailover(c *gin.Context, provider, path, model, clie
 			// blocking bootstrap-wait so the credential switch stays fast.
 			retry, done, deferred = s.doForwardPrepared(c, a, path, body, stream, model, clientToken, slotID, clientName, start, attempts, attempt > 0, preflightPrepared)
 		}
+		if releaseProbe != nil {
+			releaseProbe()
+		}
 		if done {
 			s.pool.Release(provider, clientToken, slotID)
 			return
@@ -512,7 +538,7 @@ func (s *Server) forwardWithFailover(c *gin.Context, provider, path, model, clie
 		}
 		log.Warnf("proxy: retrying with a different credential (last auth=%s)", a.ID)
 	}
-	// Backstop reached (maxAttempts) — surface the last withheld error if any.
+	// Time budget exhausted — surface the last withheld error if any.
 	if lastDeferred != nil {
 		surfaceDeferred(lastDeferred)
 		return
@@ -1363,6 +1389,7 @@ func (s *Server) doForwardAnthropicAPIKey(c *gin.Context, a *auth.Auth, path str
 	}
 
 	client := auth.ClientFor(a.ProxyURL, false)
+	dispatchAt := time.Now()
 	resp, err := client.Do(upReq)
 	if err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(ctx.Err(), context.Canceled) {
@@ -1478,11 +1505,11 @@ func (s *Server) doForwardAnthropicAPIKey(c *gin.Context, a *auth.Auth, path str
 	fault := classifyUpstreamStatus(statusForFault)
 	switch fault {
 	case faultNone:
-		s.recordAPIKeySuccess(a)
+		// Verify the completed body below before closing a half-open circuit.
 	case faultCredential:
 		// Revoked, forbidden, or out of funds — definitive, so cc-core pauses
 		// the channel on this single strike rather than re-presenting a dead
-		// key on every subsequent request. Repeated faults also disable it.
+		// key on every subsequent request. Recovery remains automatic.
 		s.recordAPIKeyFailure(a, statusForFault, parseRetryAfter(resp.Header), fmt.Sprintf("upstream %d", statusForFault))
 	case faultUpstream:
 		// Throttling, gateway errors, or a contract violation. Not a verdict
@@ -1515,6 +1542,8 @@ func (s *Server) doForwardAnthropicAPIKey(c *gin.Context, a *auth.Auth, path str
 	var counts usage.Counts
 	var sub advisor.SubUsage
 	var errSnippet string
+	var responseErr error
+	var truncated bool
 	if resp.StatusCode >= 400 {
 		errBody, _ := io.ReadAll(resp.Body)
 		errSnippet = truncate(errBody, 500)
@@ -1543,12 +1572,14 @@ func (s *Server) doForwardAnthropicAPIKey(c *gin.Context, a *auth.Auth, path str
 			// relay still adds keepalive + truncation detection so a broken
 			// stream is logged, not silently swallowed.
 			res := streamSSE(c, resp, &counts, &sub, rewriteClientModel, nil)
+			responseErr, truncated = res.err, !res.sawTerminal
 			if !res.sawTerminal && !isClientDisconnect(c.Request.Context(), res.err) {
 				log.Warnf("proxy(apikey): SSE truncated mid-stream via %s (events=%d, bytes=%d, %s): %v",
 					a.ID, res.events, res.bytes, time.Since(start).Round(time.Millisecond), res.err)
 			}
 		} else {
-			respBody, _ := io.ReadAll(resp.Body)
+			var respBody []byte
+			respBody, responseErr = io.ReadAll(resp.Body)
 			if rewriteClientModel != "" {
 				respBody = rewriteResponseModel(respBody, rewriteClientModel)
 			}
@@ -1557,6 +1588,13 @@ func (s *Server) doForwardAnthropicAPIKey(c *gin.Context, a *auth.Auth, path str
 		}
 	}
 	_ = resp.Body.Close()
+	if resp.StatusCode < 400 && !isClientDisconnect(ctx, responseErr) {
+		if responseErr != nil || truncated || usage.MissingUsage(counts) {
+			s.recordAPIKeyFailure(a, http.StatusBadGateway, time.Time{}, "incomplete upstream response")
+		} else {
+			s.recordAPIKeySuccess(a, dispatchAt)
+		}
+	}
 
 	// CostUSD = official upstream price, BilledUSD = wallet debit. See the OAuth
 	// path above for why the two are now distinct columns.
