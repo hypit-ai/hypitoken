@@ -12,7 +12,7 @@ import (
 	"github.com/wjsoj/cc-core/auth"
 )
 
-const apiKeyPreOutputTimeout = 30 * time.Second
+const apiKeyPreOutputTimeout = 60 * time.Second
 const codexDeferredResponseContextKey = "codex_deferred_response"
 
 func apiKeyModelScope(model string) string { return "apikey-model:" + model }

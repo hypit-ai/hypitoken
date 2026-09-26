@@ -1386,8 +1386,12 @@ func streamSSECodexBackendWithContentStart(c *gin.Context, resp *http.Response, 
 						// Buffer a content-free opener instead of emitting it,
 						// so it does not count as output and foreclose failover.
 						// Anything else falls through and flushes the buffer.
+						// API-key attempts have their own cancellation timer. Keep
+						// withholding until content arrives or that timer fires;
+						// the OAuth cap must not turn a late heartbeat into content
+						// and disarm the longer API-key pre-output timeout.
 						if !sentAny && !shedding && codexPreambleEvent(payload) &&
-							time.Since(withholdStart) < codexPreOutputWithholdCap {
+							(contentStarted != nil || time.Since(withholdStart) < codexPreOutputWithholdCap) {
 							if scrubbed, keep := downstream.ScrubCodexSSELine(line); keep {
 								preamble = append(preamble, held...)
 								preamble = append(preamble, scrubbed...)

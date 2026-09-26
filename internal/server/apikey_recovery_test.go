@@ -12,6 +12,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -358,6 +359,64 @@ func TestAPIKeyKeepaliveDoesNotCancelSilentAttemptBudget(t *testing.T) {
 	if cause := context.Cause(ctx); cause == nil || !strings.Contains(cause.Error(), "produced no output") {
 		t.Fatalf("keepalive canceled the silent attempt budget: %v", cause)
 	}
+}
+
+func TestAPIKeyLatePreambleDoesNotDisarmTimeout(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		parent, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+		defer cancel()
+		ctx, contentStarted, finish := apiKeyAttemptContext(parent, apiKeyPreOutputTimeout)
+		defer finish()
+		reader, writer := io.Pipe()
+		defer reader.Close()
+		go func() {
+			_, _ = io.WriteString(writer, "data: {\"type\":\"response.created\"}\n\n")
+			time.Sleep(56 * time.Second)
+			_, _ = io.WriteString(writer, "data: {\"type\":\"keepalive\"}\n\n")
+			<-ctx.Done()
+			_ = writer.CloseWithError(context.Cause(ctx))
+		}()
+		c, w := newCodexContext(t, "/v1/responses", nil)
+		var counts usage.Counts
+		start := time.Now()
+		res := streamSSECodexBackendWithContentStart(c, &http.Response{Body: reader}, &counts, nil, contentStarted)
+		if elapsed := time.Since(start); elapsed != 60*time.Second {
+			t.Fatalf("silent attempt ended after %s, want 60s", elapsed)
+		}
+		if res.wroteAny || res.sawTerminal || strings.Contains(w.Body.String(), "data:") {
+			t.Fatalf("late preamble foreclosed failover: %+v body=%q", res, w.Body.String())
+		}
+		if cause := context.Cause(ctx); cause == nil || !strings.Contains(cause.Error(), "produced no output") {
+			t.Fatalf("silent attempt lost its timeout: %v", cause)
+		}
+	})
+}
+
+func TestAPIKeyOutputAfterThirtySecondsCompletes(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx, contentStarted, finish := apiKeyAttemptContext(context.Background(), apiKeyPreOutputTimeout)
+		defer finish()
+		reader, writer := io.Pipe()
+		defer reader.Close()
+		go func() {
+			defer writer.Close()
+			_, _ = io.WriteString(writer, "data: {\"type\":\"response.created\"}\n\n")
+			time.Sleep(45 * time.Second)
+			if ctx.Err() != nil {
+				_ = writer.CloseWithError(context.Cause(ctx))
+				return
+			}
+			_, _ = io.WriteString(writer, "data: {\"type\":\"response.output_text.delta\",\"delta\":\"OK\"}\n\n")
+			time.Sleep(20 * time.Second)
+			_, _ = io.WriteString(writer, "data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n")
+		}()
+		c, w := newCodexContext(t, "/v1/responses", nil)
+		var counts usage.Counts
+		res := streamSSECodexBackendWithContentStart(c, &http.Response{Body: reader}, &counts, nil, contentStarted)
+		if ctx.Err() != nil || res.err != nil || !res.sawTerminal || !res.wroteAny || !strings.Contains(w.Body.String(), "OK") || counts.OutputTokens != 1 {
+			t.Fatalf("late output did not complete: context=%v result=%+v counts=%+v", context.Cause(ctx), res, counts)
+		}
+	})
 }
 
 func TestAPIKeyCompletionDoesNotWaitForUpstreamClose(t *testing.T) {
