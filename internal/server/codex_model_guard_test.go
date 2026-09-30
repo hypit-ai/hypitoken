@@ -58,13 +58,13 @@ func TestCodexModelVariantsResolveToTheirBase(t *testing.T) {
 	served := map[string]bool{
 		"gpt-5.6-sol": true, "gpt-5.6-terra": true, "gpt-5.6-luna": true,
 		"gpt-5.5": true, "gpt-5.4": true, "gpt-6-astra": true,
-		"gpt-6-sol": true, "gpt-6-luna": true,
+		"gpt-6.1-sol": true, "gpt-6-sol": true, "gpt-6-luna": true,
 	}
 	// Every one of these is real production traffic that produced output.
 	// gpt-5.6-luna-max alone has 51 successful requests; refusing it because
 	// no catalog spells the suffix would break working customers.
 	for _, m := range []string{
-		"gpt-6-sol", "gpt-6-luna", "gpt-6-sol(ultra)", "gpt-6-luna(max)", "gpt-6-sol-high",
+		"gpt-6.1-sol", "gpt-6.1-sol(max)", "gpt-6.1-sol-high", "gpt-6-sol", "gpt-6-luna", "gpt-6-sol(ultra)", "gpt-6-luna(max)", "gpt-6-sol-high",
 		"gpt-5.6-sol(1m)", "gpt-5.6-terra(1m)", "gpt-5.6-luna(1m)",
 		"gpt-5.6-luna-max", "gpt-5.6-sol-ultra", "gpt-5.6-sol-ultra-openai-compact",
 		"gpt-5.5-openai-compact", "gpt-5.5-high", "gpt-5.5-low",

@@ -229,7 +229,7 @@ export interface ModelHealth {
   auth_id: string;
   provider: string;
   model: string;
-  status: "ok" | "fail";
+  status: "ok" | "fail" | "unknown";
   latency_ms: number;
   error: string;
   checked_at: number;

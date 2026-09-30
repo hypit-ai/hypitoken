@@ -1304,6 +1304,13 @@ func streamSSECodexBackendWithContentStart(c *gin.Context, resp *http.Response, 
 
 						lastPayloadType = codexEventType(payload)
 						mergeCodexUsage(counts, extractCodexBackendUsageFromJSON(payload))
+						// API-key relays can emit a bare completed event without
+						// producing an answer or usage. Keep that recoverable rather
+						// than committing an empty, successful-looking response.
+						if contentStarted != nil && !sentAny && lastPayloadType == "response.completed" && usage.MissingUsage(*counts) {
+							out.shed = usage.MissingUsageError
+							return nil, false, io.EOF
+						}
 						if m := extractCodexUpstreamModel(payload); m != "" {
 							out.upstreamModel = m
 						}

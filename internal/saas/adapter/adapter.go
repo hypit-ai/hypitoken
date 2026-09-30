@@ -200,7 +200,12 @@ func (a *Adapter) PreCheck(ctx context.Context, info server.SaaSTokenInfo) *serv
 	}
 	// Balance is the BILLING workspace's pool (personal or enterprise).
 	if info.BalanceUSD <= 0 {
-		return &server.PreCheckError{Status: http.StatusPaymentRequired, Code: "insufficient_balance", Message: "The account balance is insufficient. Add funds before retrying.", Details: map[string]any{"balance_usd": info.BalanceUSD}}
+		return &server.PreCheckError{
+			Status:  http.StatusPaymentRequired,
+			Code:    "insufficient_balance",
+			Message: fmt.Sprintf("余额不足：当前计费工作区余额为 $%.6f USD。请在控制台为该工作区充值，余额恢复为正后再重试；企业工作区可联系管理员。本次请求未调用模型、未扣费。 Insufficient balance: your billing workspace balance is $%.6f USD. Top up this workspace in the console or contact its administrator, then retry once the balance is positive. This request was not sent to the model and was not charged.", info.BalanceUSD, info.BalanceUSD),
+			Details: map[string]any{"balance_usd": info.BalanceUSD},
+		}
 	}
 	// Both cap windows open at midnight in db.BillingZone (UTC+8), so "daily"
 	// and "monthly" mean the same calendar to the customer reading them, and

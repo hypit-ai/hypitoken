@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -33,6 +34,28 @@ func apiKeyModelUnavailable(body []byte) bool {
 		return true
 	}
 	return false
+}
+
+// A relay's client restriction is not evidence that the key is revoked or out
+// of funds. Keep it usable for genuine CLI requests while allowing fallback.
+func apiKeyCLIRequired(body []byte) bool {
+	var payload struct {
+		Error struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if json.Unmarshal(body, &payload) != nil {
+		return false
+	}
+	return strings.Contains(strings.ToLower(payload.Error.Message), "only accepts requests from the official claude code cli")
+}
+
+func (s *Server) recordAPIKeyStreamFailure(a *auth.Auth, model, reason string) {
+	// A sporadic truncated stream may be surrounded by successful concurrent
+	// turns. Give this model a short pause even when those successes reset the
+	// whole-key breaker; other models and client cancellations remain unaffected.
+	a.MarkModelRateLimited(apiKeyModelScope(model), time.Now().Add(30*time.Second))
+	s.recordAPIKeyFailure(a, http.StatusBadGateway, time.Time{}, reason)
 }
 
 // Upstream faults use cc-core's timed circuit breaker, never the operator's

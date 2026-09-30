@@ -1,5 +1,23 @@
 # GPT-6 Sol and Luna support
 
+## GPT-6.1 Sol addition (2026-09-30)
+
+Both applications now depend on cc-core v0.8.144. The new `gpt-6.1-sol`
+card uses Standard prices per million tokens: input $2, output $10,
+cache read $0.10, cache write $2.50. In particular, the cache-read price
+is half the older `gpt-6-sol` rate. Existing fixed short-context billing
+and workspace/service-tier policies remain unchanged.
+
+Official source: https://developers.openai.com/api/docs/models/gpt-6.1-sol
+
+The public API supports a 1,050,000-token context and reasoning efforts
+low, medium (default), high, xhigh and max. The fallback model picker
+uses those API capabilities. OAuth plan eligibility and Responses-Lite
+behavior are not inferred from the API launch; existing API-key model
+catalog routing handles the new model. Both token.me and vllmproxy
+completed small Responses requests under the original model name with
+terminal status and usage during production verification.
+
 Both gateways use cc-core for OAuth model eligibility, Codex model-picker
 metadata, Responses-Lite normalization, and prices. Updating UI labels or price
 cards alone does not make a model routable: the old OAuth catalog caused the

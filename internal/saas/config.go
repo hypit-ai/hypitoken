@@ -139,6 +139,8 @@ type Config struct {
 
 	// HealthCheck cadence for API-key credentials.
 	HealthCheckInterval time.Duration `yaml:"health_check_interval"`
+	// CLI-only or probe-restricted upstreams use recent real requests instead of synthetic probes.
+	HealthPassiveAuthIDs []string `yaml:"health_passive_auth_ids"`
 
 	// ServiceTokens authenticate a SIBLING SERVICE — today HypiHub, the
 	// image/video generation gateway — calling the machine-to-machine

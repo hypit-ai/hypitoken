@@ -664,8 +664,8 @@ func (s *Server) doForwardCodex(c *gin.Context, a *auth.Auth, path string, body 
 				// The relay served a stream it cannot account for. Bill nothing
 				// — there is no honest number to put on the invoice — and cool
 				// the credential so traffic rotates to one that reports usage.
-				log.Warnf("codex proxy(apikey): %s streamed success without usage; billing $0 and cooling credential", a.ID)
-				s.reportCodexAPIKeyFault(a, http.StatusBadGateway, time.Time{})
+				log.Warnf("codex proxy(apikey): %s streamed without usage (truncated=%v); billing $0 and pausing model %s", a.ID, streamTruncated, model)
+				s.recordAPIKeyStreamFailure(a, model, usage.MissingUsageError)
 			}
 		case bridged:
 			// Non-streaming bridged request. The relay may still answer with an
@@ -862,8 +862,8 @@ func (s *Server) doForwardCodex(c *gin.Context, a *auth.Auth, path string, body 
 	if errField == "" && shedLabel != "" {
 		errField = shedLabel
 	}
-	if errField == "" && streamTruncated {
-		errField = "stream truncated before terminal event"
+	if streamTruncated && outcome != usage.StreamClientCanceled {
+		errField = joinLogError(errField, "stream truncated before terminal event")
 	}
 	if resp.StatusCode >= 400 {
 		errField = fmt.Sprintf("upstream %d: %s", resp.StatusCode, truncate([]byte(errSnippet), 200))

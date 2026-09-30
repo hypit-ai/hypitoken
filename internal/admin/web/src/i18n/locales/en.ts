@@ -790,6 +790,21 @@ export default {
       growth: "Growth",
       referral: "Referral",
       tickets: "Tickets",
+      invoices: "Send invoices",
+    },
+    invoices: {
+      title: "Send an invoice",
+      description:
+        "Send an issued invoice as hypitoken. Invoice requests are handled through tickets.",
+      email: "Recipient email",
+      file: "Invoice file",
+      fileHint: "Upload one PDF, up to 8 MiB. It will be sent as an email attachment.",
+      invalidPDF: "Please upload a valid PDF file.",
+      tooLarge: "The invoice PDF must not exceed 8 MiB.",
+      send: "Send invoice",
+      sending: "Sending…",
+      sent: "Invoice accepted by the email service for {{email}}.",
+      tickets: "View request tickets",
     },
     workspaces: {
       title: "Enterprise workspaces",

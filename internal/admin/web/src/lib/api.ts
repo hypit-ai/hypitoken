@@ -66,7 +66,7 @@ const BASE = "/api/v2";
 export async function api<T = unknown>(path: string, opts: RequestInit = {}): Promise<T> {
   const token = getJWT();
   const headers: Record<string, string> = {
-    "Content-Type": "application/json",
+    ...(opts.body instanceof FormData ? {} : { "Content-Type": "application/json" }),
     ...((opts.headers as Record<string, string>) || {}),
   };
   if (token) headers.Authorization = `Bearer ${token}`;

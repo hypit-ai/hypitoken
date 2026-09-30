@@ -5,6 +5,7 @@ import {
   LayoutDashboard,
   LifeBuoy,
   Megaphone,
+  Receipt,
   ScrollText,
   Shield,
   ShoppingCart,
@@ -21,6 +22,7 @@ import { AdminDashboard } from "@/components/admin/admin-dashboard";
 import { AttributionTab } from "@/components/admin/attribution-tab";
 import { CredentialsTab } from "@/components/admin/credentials/credentials-tab";
 import { FadeIn } from "@/components/admin/fade-in";
+import { InvoicesTab } from "@/components/admin/invoices-tab";
 import { OverviewPanel } from "@/components/admin/overview-panel";
 import { ReferralTab } from "@/components/admin/referral-tab";
 import { RequestsExplorer } from "@/components/admin/requests-explorer";
@@ -61,6 +63,7 @@ const TABS = [
   { to: "growth", labelKey: "admin.tabs.growth", icon: Megaphone },
   { to: "referral", labelKey: "admin.tabs.referral", icon: Gift },
   { to: "tickets", labelKey: "admin.tabs.tickets", icon: LifeBuoy },
+  { to: "invoices", labelKey: "admin.tabs.invoices", icon: Receipt },
 ];
 
 export default function AdminPage() {
@@ -107,6 +110,7 @@ export default function AdminPage() {
           <Route path="growth" element={<AttributionTab />} />
           <Route path="referral" element={<ReferralTab />} />
           <Route path="tickets" element={<TicketsTab />} />
+          <Route path="invoices" element={<InvoicesTab />} />
         </Routes>
       </div>
     </>

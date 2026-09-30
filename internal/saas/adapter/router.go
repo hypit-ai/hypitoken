@@ -643,6 +643,9 @@ func Mount(engine *gin.Engine, store *db.DB, authH *saasauth.Handler, tokensH *t
 		}
 		cur := map[string]*pcount{}
 		for _, r := range curr {
+			if r.Status == "unknown" {
+				continue
+			}
 			p := cur[r.Provider]
 			if p == nil {
 				p = &pcount{}

@@ -231,11 +231,12 @@ func main() {
 		// disk for a tier of backup the off-host archive already covers.
 		go saasDB.RunDailyBackups(refresherCtx, cfg.SaaS.LocalSnapshotDays)
 
-		mailer := mail.New(mail.SMTPConfig{
+		smtpConfig := mail.SMTPConfig{
 			Host: cfg.SaaS.SMTP.Host, Port: cfg.SaaS.SMTP.Port,
 			Username: cfg.SaaS.SMTP.Username, Password: cfg.SaaS.SMTP.Password,
 			From: cfg.SaaS.SMTP.From, UseTLS: cfg.SaaS.SMTP.UseTLS,
-		}, cfg.SaaS.SiteName)
+		}
+		mailer := mail.New(smtpConfig, cfg.SaaS.SiteName)
 
 		// Hourly PRAGMA quick_check, plus escalation of any corruption error
 		// that surfaces from live traffic. On 2026-08-18 saas.db developed
@@ -425,6 +426,7 @@ func main() {
 		// mail provider's quota is itself a casualty of the kind of attack that
 		// triggers mass disabling).
 		supportSvc := support.New(saasDB, cfg.SaaS.SiteName, cfg.SaaS.SiteURL)
+		supportSvc.ConfigureInvoiceDelivery(mail.NewInvoiceMailer(smtpConfig))
 		supportSvc.ConfigureInvoicing(cfg.SaaS.Invoice.TitleSuggestURL, support.PaymentInfo{
 			AccountNo:   cfg.SaaS.Invoice.AccountNo,
 			AccountName: cfg.SaaS.Invoice.AccountName,
@@ -507,6 +509,7 @@ func main() {
 
 		// Model health background checker.
 		hc := health.New(saasDB, pool, cfg.SaaS.HealthCheckInterval, cfg.LogDir)
+		hc.PassiveAuthIDs = cfg.SaaS.HealthPassiveAuthIDs
 		go hc.Run(refresherCtx)
 		saasadmin.HealthRefresher = hc.Refresh
 

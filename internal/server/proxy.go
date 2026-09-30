@@ -139,7 +139,8 @@ func (s *Server) forward(c *gin.Context, provider, path string) {
 			s.emitLog(requestlog.Record{
 				Client: clientName, ClientToken: maskClientToken(clientToken), Provider: provider, Model: model,
 				Stream: peek.Stream, Path: path, Status: pre.Status,
-				DurationMs: time.Since(start).Milliseconds(), Error: "saas pre-check rejected",
+				DurationMs: time.Since(start).Milliseconds(), Error: "saas pre-check rejected: " + pre.Code + ": " + pre.Message,
+				UserID: saasInfo.UserID,
 			})
 			return
 		}
@@ -352,6 +353,10 @@ func (s *Server) forwardWithFailover(c *gin.Context, provider, path, model, clie
 	// Raw bodies remain in operator logs because they may identify a vendor,
 	// relay, account, or credential.
 	surfaceDeferred := func(d *deferredResponse) {
+		logError := fmt.Sprintf("upstream %d (all credentials exhausted)", d.status)
+		if d.status == http.StatusForbidden && apiKeyCLIRequired(d.body) {
+			logError = "upstream requires official Claude Code CLI"
+		}
 		copySafeRetryHeaders(c, d.header)
 		writeAPIError(c, provider, publicUpstreamError(d.status, d.body))
 		s.emitLog(requestlog.Record{
@@ -359,7 +364,7 @@ func (s *Server) forwardWithFailover(c *gin.Context, provider, path, model, clie
 			AuthID: d.authID, AuthLabel: d.authLabel, AuthKind: d.authKind,
 			Model: model, Status: d.status, Attempts: attempts,
 			Stream: stream, Path: path, DurationMs: time.Since(start).Milliseconds(),
-			Error:       fmt.Sprintf("upstream %d (all credentials exhausted)", d.status),
+			Error:       logError,
 			ClaudeAudit: d.claudeAudit,
 		})
 	}
@@ -1499,6 +1504,29 @@ func (s *Server) doForwardAnthropicAPIKey(c *gin.Context, a *auth.Auth, path str
 		}
 	}
 
+	// Capability and client restrictions must not quarantine unrelated models
+	// or a working official CLI channel. Audit every withheld attempt.
+	if resp.StatusCode >= 400 {
+		errBody, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		resp.Body = io.NopCloser(bytes.NewReader(errBody))
+		modelUnavailable := apiKeyModelUnavailable(errBody)
+		cliRequired := resp.StatusCode == http.StatusForbidden && apiKeyCLIRequired(errBody)
+		if modelUnavailable || cliRequired {
+			reason := "upstream requires official Claude Code CLI"
+			if modelUnavailable {
+				a.MarkModelRateLimited(apiKeyModelScope(model), time.Now().Add(10*time.Minute))
+				reason = "upstream model unavailable"
+			}
+			s.emitLog(requestlog.Record{Client: clientName, ClientToken: maskClientToken(clientToken),
+				Provider: auth.ProviderAnthropic, AuthID: a.ID, AuthLabel: a.Label, AuthKind: "apikey",
+				Model: model, Stream: stream, Path: path, Status: resp.StatusCode,
+				DurationMs: time.Since(start).Milliseconds(), Attempts: attempts, Error: reason, AttemptOnly: true})
+			return true, false, &deferredResponse{status: resp.StatusCode, header: resp.Header.Clone(), body: errBody,
+				authID: a.ID, authLabel: a.Label, authKind: "apikey"}
+		}
+	}
+
 	// Credential health bookkeeping + retryability, computed before writing
 	// anything so a retryable fault can be withheld and retried on another
 	// credential while the pool still has a slot.
@@ -1528,6 +1556,11 @@ func (s *Server) doForwardAnthropicAPIKey(c *gin.Context, a *auth.Auth, path str
 		errBody, _ := io.ReadAll(resp.Body)
 		_ = resp.Body.Close()
 		log.Warnf("proxy(apikey): %s returned %d — retrying on another credential. body=%s", a.ID, resp.StatusCode, truncate(errBody, 500))
+		s.emitLog(requestlog.Record{Client: clientName, ClientToken: maskClientToken(clientToken),
+			Provider: auth.ProviderAnthropic, AuthID: a.ID, AuthLabel: a.Label, AuthKind: "apikey",
+			Model: model, Stream: stream, Path: path, Status: statusForFault,
+			DurationMs: time.Since(start).Milliseconds(), Attempts: attempts,
+			Error: fmt.Sprintf("upstream %d: %s", statusForFault, truncate(errBody, 200)), AttemptOnly: true})
 		// statusForFault, not resp.StatusCode: a contract violation arrives as
 		// 200 but must be replayed to the client as the 502 it really is if
 		// every credential ends up exhausted.
@@ -1535,7 +1568,7 @@ func (s *Server) doForwardAnthropicAPIKey(c *gin.Context, a *auth.Auth, path str
 			status: statusForFault,
 			header: resp.Header.Clone(),
 			body:   errBody,
-			authID: a.ID,
+			authID: a.ID, authLabel: a.Label, authKind: "apikey",
 		}
 	}
 

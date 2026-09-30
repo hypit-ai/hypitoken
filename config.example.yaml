@@ -386,6 +386,9 @@ saas:
 
   # Background API-key health checker cadence.
   health_check_interval: 30m
+  # CLI-only or probe-restricted channels: derive health from real requests.
+  # Disabled credentials are never probed. Other keys probe their allowed_models.
+  health_passive_auth_ids: []
 
 # -----------------------------------------------------------------------
 # Shop — standalone storefront on its own listener.

@@ -13,7 +13,7 @@ import (
 )
 
 func TestGPT6ChargesWorkspaceMultiplierOnce(t *testing.T) {
-	for _, model := range []string{"gpt-6-sol", "gpt-6-luna"} {
+	for _, model := range []string{"gpt-6.1-sol", "gpt-6-sol", "gpt-6-luna"} {
 		for _, multiplier := range []float64{0, .04} {
 			t.Run(fmt.Sprintf("%s/%g", model, multiplier), func(t *testing.T) {
 				f := newChargeFixture(t, 100)

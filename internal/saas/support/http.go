@@ -55,6 +55,7 @@ func (s *Service) UserRoutes(g *gin.RouterGroup) {
 
 // AdminRoutes mounts the operator queue under /api/v2/admin/tickets.
 func (s *Service) AdminRoutes(g *gin.RouterGroup) {
+	g.POST("/invoices/send", s.sendInvoice)
 	t := g.Group("/tickets")
 	t.GET("", s.adminList)
 	t.GET("/:id", s.adminGet)

@@ -32,6 +32,7 @@ import (
 	"time"
 
 	"github.com/wjsoj/CPA-Claude/internal/saas/db"
+	"github.com/wjsoj/CPA-Claude/internal/saas/mail"
 )
 
 // Ticket kinds.
@@ -65,10 +66,8 @@ var (
 // Service is the support desk. Construct with New and hold one instance; all
 // state lives in SQLite so it is safe for concurrent use.
 //
-// Note there is no mailer here. The desk is entirely in-app: a user submits and
-// reads replies on the page. That is a deliberate constraint rather than an
-// omission — see PublicRoutes for why an appeal channel must not depend on
-// outbound mail.
+// The desk stays entirely in-app. Only the separate admin invoice delivery
+// endpoint uses outbound mail; appeals never depend on the mail provider.
 type Service struct {
 	DB       *db.DB
 	SiteName string
@@ -81,6 +80,7 @@ type Service struct {
 	titleSuggestURL string
 	payment         PaymentInfo
 	httpClient      *http.Client
+	invoiceMailer   mail.AttachmentMailer
 }
 
 func New(store *db.DB, siteName, siteURL string) *Service {

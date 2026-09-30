@@ -95,6 +95,7 @@ const PRESENTATION: Record<string, { display: string; tier: string }> = {
   "claude-sonnet-4-6": { display: "Claude Sonnet 4.6", tier: "standard" },
   "claude-haiku-4-5": { display: "Claude Haiku 4.5", tier: "fast" },
   "gpt-6-astra": { display: "GPT-6 Astra", tier: "flagship" },
+  "gpt-6.1-sol": { display: "GPT-6.1 Sol", tier: "advanced" },
   "gpt-6-sol": { display: "GPT-6 Sol", tier: "advanced" },
   "gpt-6-luna": { display: "GPT-6 Luna", tier: "fast" },
   "gpt-5.6-sol": { display: "GPT-5.6 Sol", tier: "advanced" },
@@ -136,6 +137,7 @@ const DATED_SUFFIX = /-\d{8}$/;
 // cannot quote.
 const SOLD_OPENAI = [
   "gpt-6-astra",
+  "gpt-6.1-sol",
   "gpt-6-sol",
   "gpt-6-luna",
   "gpt-5.6-sol",

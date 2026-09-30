@@ -103,7 +103,7 @@ func (m *ResendMailer) Send(to, subject, html, text string) error {
 	return nil
 }
 
-func (m *ResendMailer) sendAPI(to, subject, html, text string) error {
+func (m *ResendMailer) sendAPI(to, subject, html, text string, attachments ...Attachment) error {
 	body := map[string]any{
 		"from":    m.from,
 		"to":      []string{to},
@@ -112,6 +112,9 @@ func (m *ResendMailer) sendAPI(to, subject, html, text string) error {
 	}
 	if strings.TrimSpace(text) != "" {
 		body["text"] = text
+	}
+	if len(attachments) > 0 {
+		body["attachments"] = attachments
 	}
 	payload, err := json.Marshal(body)
 	if err != nil {
