@@ -84,8 +84,8 @@ func (s *Service) sendInvoice(c *gin.Context) {
 		return
 	}
 	err = s.invoiceMailer.SendAttachments(email, "hypitoken · 您的发票",
-		"<p>您好，</p><p>感谢您使用 hypitoken。您的发票已开具，请查收附件 PDF。</p><p>如有任何问题，请通过 hypitoken 工单联系我们。</p>",
-		"您好，\n\n感谢您使用 hypitoken。您的发票已开具，请查收附件 PDF。\n\n如有任何问题，请通过 hypitoken 工单联系我们。",
+		"<p>您好，</p><p>感谢您使用 hypitoken。您的发票已开具，请查收附件 PDF。</p>",
+		"您好，\n\n感谢您使用 hypitoken。您的发票已开具，请查收附件 PDF。",
 		[]mail.Attachment{{Filename: filename, Content: data, ContentType: "application/pdf"}})
 	if err != nil {
 		log.Warnf("invoice: Resend delivery failed: %v", err)
