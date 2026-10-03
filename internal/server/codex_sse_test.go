@@ -3,6 +3,7 @@ package server
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -227,10 +228,8 @@ func TestStreamSSECodexBackendDemotesCapacityAfterOutput(t *testing.T) {
 	}
 }
 
-// An error that is the request's own fault must pass through untouched, before
-// output or after: retrying it on another credential would fail identically and
-// the client needs the real reason.
-func TestStreamSSECodexBackendLeavesFatalErrorsAlone(t *testing.T) {
+// A fatal rejection must preserve its details in the client's failure event.
+func TestStreamSSECodexBackendPreservesFatalErrorDetails(t *testing.T) {
 	frame := `{"type":"error","error":{"type":"invalid_request_error","code":"content_policy_violation","message":"blocked"}}`
 	c, w := newCodexStreamCtx()
 	resp := &http.Response{Body: io.NopCloser(strings.NewReader("event: error\ndata: " + frame + "\n\n"))}
@@ -241,8 +240,8 @@ func TestStreamSSECodexBackendLeavesFatalErrorsAlone(t *testing.T) {
 	if res.shed != "" {
 		t.Errorf("a fatal error is not a shed; got %q", res.shed)
 	}
-	if out := w.Body.String(); !strings.Contains(out, frame) {
-		t.Errorf("frame must be forwarded verbatim:\n want %q\n  got %q", frame, out)
+	if out := w.Body.String(); !strings.Contains(out, `"error":{"type":"invalid_request_error","code":"content_policy_violation","message":"blocked"}`) || !strings.Contains(out, `"type":"response.failed"`) {
+		t.Errorf("failure event must preserve upstream error details, got %q", out)
 	}
 }
 
@@ -567,6 +566,7 @@ func TestFatalErrorFrameReachesSSEClient(t *testing.T) {
 	} {
 		for _, frame := range []struct{ event, payload string }{
 			{"error", `{"type":"error","error":{"code":"invalid_request_error","message":"synthetic rejection"}}`},
+			{"error", `{"type":"error","error":{"code":null,"type":"invalid_request_error","message":"synthetic rejection","param":null}}`},
 			{"response.failed", `{"type":"response.failed","response":{"error":{"code":"invalid_request_error","message":"synthetic rejection"}}}`},
 		} {
 			for _, relay := range []string{"oauth", "apikey"} {
@@ -604,7 +604,19 @@ func TestFatalErrorFrameReachesSSEClient(t *testing.T) {
 							case strings.HasPrefix(line, "data:"):
 								data += strings.TrimPrefix(strings.TrimPrefix(line, "data:"), " ") + "\n"
 							case line == "":
-								if event == frame.event && strings.TrimSuffix(data, "\n") == frame.payload {
+								if event == "response.failed" {
+									var failure struct {
+										Type     string `json:"type"`
+										Response struct {
+											Error map[string]any `json:"error"`
+										} `json:"response"`
+									}
+									if err := json.Unmarshal([]byte(data), &failure); err != nil {
+										t.Fatal(err)
+									}
+									if failure.Type != "response.failed" || failure.Response.Error["message"] != "synthetic rejection" {
+										t.Fatalf("client did not receive the original rejection: %s", data)
+									}
 									dispatched++
 								}
 								event, data = "", ""

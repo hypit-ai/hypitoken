@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -93,6 +94,40 @@ func codexWSDialFront(t *testing.T, front *httptest.Server) *gorillaws.Conn {
 
 var codexWSUpgraderForTest = gorillaws.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 
+func TestCodexWSSelectsAccountThatSupportsRequestedModel(t *testing.T) {
+	saw := make(chan string, 1)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := codexWSUpgraderForTest.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		if _, _, err := conn.ReadMessage(); err == nil {
+			saw <- r.Header.Get("Authorization")
+		}
+	}))
+	defer upstream.Close()
+	free, paid := codexWSTestOAuth("free"), codexWSTestOAuth("paid")
+	free.PlanType, paid.PlanType = "free", "pro"
+	free.AccessToken, paid.AccessToken = "synthetic-free", "synthetic-paid"
+	s := codexWSTestServer(upstream.URL, free, paid)
+	if got := s.pool.Acquire(context.Background(), auth.ProviderOpenAI, "sk-downstream-user", "", "gpt-6-luna", "win-42", paid.ID); got != free {
+		t.Fatal("failed to establish the Free-account sticky session")
+	}
+	client := codexWSDialFront(t, codexWSFront(t, s))
+	if err := client.WriteMessage(gorillaws.TextMessage, []byte(`{"type":"response.create","model":"gpt-5.6-sol","input":[]}`)); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case got := <-saw:
+		if got != "Bearer synthetic-paid" {
+			t.Fatal("paid model reached an ineligible account")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("eligible account never received the request")
+	}
+}
+
 // (1) The client->upstream direction really rebinds, and the frame's identity
 // matches the one advertised on the handshake.
 //
@@ -132,7 +167,7 @@ func TestCodexWSPumpRebindsClientFrameToHandshakeIdentity(t *testing.T) {
 
 	// A downstream client that supplies its OWN ids. None of them may survive.
 	const clientSession = "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa"
-	firstFrame := `{"type":"response.create","model":"gpt-5-codex","client_metadata":{"session_id":"` +
+	firstFrame := `{"type":"response.create","model":"gpt-5.6-sol","client_metadata":{"session_id":"` +
 		clientSession + `","thread_id":"` + clientSession + `","x-codex-window-id":"` + clientSession + `:3"},"input":[]}`
 	if err := client.WriteMessage(gorillaws.TextMessage, []byte(firstFrame)); err != nil {
 		t.Fatalf("write first frame: %v", err)
@@ -140,7 +175,7 @@ func TestCodexWSPumpRebindsClientFrameToHandshakeIdentity(t *testing.T) {
 
 	// Turn two goes through pumpCodexWS's client->upstream goroutine, not the
 	// handler.
-	secondFrame := `{"type":"response.create","model":"gpt-5-codex","client_metadata":{"session_id":"` +
+	secondFrame := `{"type":"response.create","model":"gpt-5.6-sol","client_metadata":{"session_id":"` +
 		clientSession + `","thread_id":"` + clientSession + `"},"input":[]}`
 	if err := client.WriteMessage(gorillaws.TextMessage, []byte(secondFrame)); err != nil {
 		t.Fatalf("write second frame: %v", err)
@@ -225,7 +260,7 @@ func TestCodexWSPumpScrubsUpstreamFramesWithoutLosingBilling(t *testing.T) {
 	s := codexWSTestServer(upstream.URL, codexWSTestOAuth("codex-a.json"))
 	client := codexWSDialFront(t, codexWSFront(t, s))
 	if err := client.WriteMessage(gorillaws.TextMessage,
-		[]byte(`{"type":"response.create","model":"gpt-5-codex","input":[]}`)); err != nil {
+		[]byte(`{"type":"response.create","model":"gpt-5.6-sol","input":[]}`)); err != nil {
 		t.Fatalf("write first frame: %v", err)
 	}
 	select {

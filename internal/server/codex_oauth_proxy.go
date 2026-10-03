@@ -843,6 +843,34 @@ func codexTerminalEvent(payload []byte) bool {
 	return false
 }
 
+// Codex's Responses SSE client ignores ordinary top-level error events and
+// reports a missing response.completed at EOF. Put the original error in a
+// response.failed envelope so the client can surface its code and message.
+// Call only for errors that will be forwarded, after retry/health decisions
+// have inspected the upstream payload.
+func codexResponseFailure(payload []byte) ([]byte, bool) {
+	var event map[string]json.RawMessage
+	if json.Unmarshal(payload, &event) != nil || string(event["type"]) != `"error"` {
+		return nil, false
+	}
+	var detail map[string]json.RawMessage
+	if json.Unmarshal(event["error"], &detail) != nil || detail == nil {
+		return nil, false
+	}
+	response := map[string]json.RawMessage{
+		"status": json.RawMessage(`"failed"`),
+		"error":  event["error"],
+	}
+	if id, ok := event["response_id"]; ok {
+		response["id"] = id
+	}
+	event["type"] = json.RawMessage(`"response.failed"`)
+	event["response"], _ = json.Marshal(response)
+	delete(event, "error")
+	out, err := json.Marshal(event)
+	return out, err == nil
+}
+
 // codexPreambleEvent reports whether a Codex SSE payload is one of the
 // content-free events — the ones upstream opens with, plus the keepalive it
 // emits while a turn waits for capacity. They carry no model output,
@@ -1356,7 +1384,7 @@ func streamSSECodexBackendWithContentStart(c *gin.Context, resp *http.Response, 
 								out.demoted.shed = true
 							}
 						}
-						// ClassFatal frames are forwarded verbatim: retrying
+						// ClassFatal errors preserve their details: retrying
 						// them elsewhere would fail identically, and the client
 						// needs the real reason.
 						//
@@ -1371,7 +1399,7 @@ func streamSSECodexBackendWithContentStart(c *gin.Context, resp *http.Response, 
 							}
 							// This turn is over. ClassFatal means retrying
 							// elsewhere would fail identically, so the frame is
-							// forwarded verbatim — but forwarding it and then
+							// forwarded — but forwarding it and then
 							// going back to the read loop left the stream OPEN,
 							// with nothing further ever coming, until
 							// ReadTimeout expired ten minutes later.
@@ -1420,6 +1448,12 @@ func streamSSECodexBackendWithContentStart(c *gin.Context, resp *http.Response, 
 							held = nil
 						} else {
 							line = scrubbed
+						}
+						if lastPayloadType == "error" && len(line) > 0 {
+							if failed, ok := codexResponseFailure(bytes.TrimSpace(bytes.TrimPrefix(line, []byte("data:")))); ok {
+								held = []byte("event: response.failed\n")
+								line = append(append([]byte("data: "), failed...), '\n')
+							}
 						}
 					}
 				}

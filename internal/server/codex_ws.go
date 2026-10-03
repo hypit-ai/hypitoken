@@ -241,6 +241,7 @@ func (s *Server) handleCodexResponsesWS(c *gin.Context) {
 		for id := range tried {
 			exclude = append(exclude, id)
 		}
+		exclude = s.excludeUnsupportedCodexOAuth(provider, model, exclude)
 		cand := s.pool.Acquire(c.Request.Context(), provider, clientToken, clientGroup, model, slotID, exclude...)
 		if cand == nil {
 			break

@@ -102,6 +102,40 @@ func (s *Server) codexOAuthModelSet() (models map[string]bool, apiKeys []*auth.A
 	return models, apiKeys
 }
 
+// The ingress catalog is a union across accounts. A model present there is
+// not necessarily available to the individual account selected by the pool.
+// Filter before acquisition so sticky sessions and fallback cannot send a
+// paid-plan model to a Free account or spend failover attempts on it.
+func (s *Server) excludeUnsupportedCodexOAuth(provider, model string, excluded []string) []string {
+	if auth.NormalizeProvider(provider) != auth.ProviderOpenAI || model == "" || model == "unknown" || codexModelServable(model, codexHiddenModels) {
+		return excluded
+	}
+	out := append([]string(nil), excluded...)
+	candidates := codexModelCandidates(model)
+	for _, st := range s.pool.Status() {
+		if st.Auth.Kind != auth.KindOAuth || auth.NormalizeProvider(st.Auth.Provider) != auth.ProviderOpenAI {
+			continue
+		}
+		live := s.pool.FindByID(st.Auth.ID)
+		if live == nil {
+			continue
+		}
+		_, plan := live.CodexIdentity()
+		supported := false
+		for _, available := range auth.CodexModelsForPlan(plan) {
+			for _, candidate := range candidates {
+				if available == candidate {
+					supported = true
+				}
+			}
+		}
+		if !supported {
+			out = append(out, st.Auth.ID)
+		}
+	}
+	return out
+}
+
 // apiKeyModels returns the cached relay catalog, and whether it is usable. A
 // stale entry triggers a background refresh and is still returned: an entry a
 // few minutes old is a far better answer than blocking the request behind a

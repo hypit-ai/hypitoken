@@ -131,6 +131,7 @@ func (s *Server) beginAPIKeyAttempt(a *auth.Auth) (release func(), retryAfter ti
 // does not stay unverified forever while another healthy channel serves all
 // requests. Selection still goes through the pool's provider/group/model gates.
 func (s *Server) acquireWithAPIKeyRecovery(ctx context.Context, provider, clientToken, group, model, session string, opts auth.AcquireOptions) *auth.Auth {
+	opts.ExcludeIDs = s.excludeUnsupportedCodexOAuth(provider, model, opts.ExcludeIDs)
 	s.apiKeyHealthMu.Lock()
 	due := make(map[string]bool)
 	for a := range s.apiKeyRecovery {
