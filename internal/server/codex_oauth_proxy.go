@@ -1514,17 +1514,21 @@ func streamSSECodexBackendWithContentStart(c *gin.Context, resp *http.Response, 
 				}
 				sentAny = true
 			}
+			if fatalFrame {
+				// End the event before closing the stream. We have read its
+				// data line, but not the separating blank line; SSE clients
+				// discard an unfinished event at EOF and lose the real error.
+				// Also handle a complete JSON payload with no trailing newline.
+				emit = append(bytes.TrimRight(emit, "\r\n"), '\n', '\n')
+				if rerr == nil {
+					rerr = io.EOF
+				}
+				return emit, terminal, rerr
+			}
 			// Native API-key relays sometimes keep HTTP open after completion.
 			// Finish the SSE frame and return the completed answer immediately.
 			if terminal && contentStarted != nil {
 				return append(emit, '\n'), true, io.EOF
-			}
-			if fatalFrame && rerr == nil {
-				// Emit the frame, then end. io.EOF rather than a synthetic
-				// error so every caller treats it as an ordinary stream end;
-				// the request log still names the rejection, because
-				// out.fatalCode is set and sawTerminal is not.
-				return emit, terminal, io.EOF
 			}
 			if len(emit) > 0 || rerr != nil {
 				return emit, terminal, rerr

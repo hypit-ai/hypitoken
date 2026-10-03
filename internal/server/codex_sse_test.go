@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"io"
@@ -552,6 +553,73 @@ func TestFatalErrorFrameIsNotRecordedAsATruncation(t *testing.T) {
 	}
 	if !strings.Contains(w.Body.String(), "invalid_request_error") {
 		t.Errorf("the client must see the real reason, got %q", w.Body.String())
+	}
+}
+
+// An SSE client dispatches an event only after its terminating empty line.
+// Checking that the error JSON appears on the wire misses a dropped separator:
+// the client discards the pending event at EOF and reports a disconnected stream.
+func TestFatalErrorFrameReachesSSEClient(t *testing.T) {
+	for _, framing := range []struct{ name, newline, tail string }{
+		{"LF", "\n", "\n\n"},
+		{"CRLF", "\r\n", "\r\n\r\n"},
+		{"EOF", "\n", ""},
+	} {
+		for _, frame := range []struct{ event, payload string }{
+			{"error", `{"type":"error","error":{"code":"invalid_request_error","message":"synthetic rejection"}}`},
+			{"response.failed", `{"type":"response.failed","response":{"error":{"code":"invalid_request_error","message":"synthetic rejection"}}}`},
+		} {
+			for _, relay := range []string{"oauth", "apikey"} {
+				for _, stage := range []string{"before_output", "after_output"} {
+					t.Run(framing.name+"/"+frame.event+"/"+relay+"/"+stage, func(t *testing.T) {
+						body := "event: " + frame.event + framing.newline + "data: " + frame.payload + framing.tail
+						if stage == "after_output" {
+							body = "data: " + `{"type":"response.output_text.delta","delta":"partial"}` + "\n\n" + body
+						}
+						c, w := newCodexStreamCtx()
+						resp := &http.Response{Body: io.NopCloser(strings.NewReader(body))}
+						var counts usage.Counts
+						var contentStarted func()
+						if relay == "apikey" {
+							contentStarted = func() {}
+						}
+						res := streamSSECodexBackendWithContentStart(c, resp, &counts, func() {}, contentStarted)
+						if res.shed != "" {
+							t.Fatalf("fatal rejection was swallowed for failover: %q", res.shed)
+						}
+						if res.sawTerminal != (frame.event == "response.failed") {
+							t.Fatalf("terminal classification changed: %v", res.sawTerminal)
+						}
+
+						// Parse complete SSE events, without dispatching pending data
+						// at EOF. Scanner handles both LF and CRLF line endings.
+						scanner := bufio.NewScanner(strings.NewReader(w.Body.String()))
+						var event, data string
+						dispatched := 0
+						for scanner.Scan() {
+							line := scanner.Text()
+							switch {
+							case strings.HasPrefix(line, "event:"):
+								event = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
+							case strings.HasPrefix(line, "data:"):
+								data += strings.TrimPrefix(strings.TrimPrefix(line, "data:"), " ") + "\n"
+							case line == "":
+								if event == frame.event && strings.TrimSuffix(data, "\n") == frame.payload {
+									dispatched++
+								}
+								event, data = "", ""
+							}
+						}
+						if err := scanner.Err(); err != nil {
+							t.Fatal(err)
+						}
+						if dispatched != 1 {
+							t.Fatalf("error events dispatched = %d, want 1; wire = %q", dispatched, w.Body.String())
+						}
+					})
+				}
+			}
+		}
 	}
 }
 
