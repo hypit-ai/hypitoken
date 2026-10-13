@@ -661,11 +661,9 @@ func (s *Server) doForwardCodex(c *gin.Context, a *auth.Auth, path string, body 
 				log.Infof("codex proxy(apikey): client canceled mid-stream via %s (observed in=%d out=%d)",
 					a.ID, counts.InputTokens, counts.OutputTokens)
 			case usage.StreamUpstreamNoUsage:
-				// The relay served a stream it cannot account for. Bill nothing
-				// — there is no honest number to put on the invoice — and cool
-				// the credential so traffic rotates to one that reports usage.
-				log.Warnf("codex proxy(apikey): %s streamed without usage (truncated=%v); billing $0 and pausing model %s", a.ID, streamTruncated, model)
-				s.recordAPIKeyStreamFailure(a, model, usage.MissingUsageError)
+				// Missing accounting metadata must not block future requests.
+				// Forward the response, log the observation, and bill nothing.
+				log.Warnf("codex proxy(apikey): %s streamed without usage (truncated=%v); billing $0; channel remains eligible", a.ID, streamTruncated)
 			}
 		case bridged:
 			// Non-streaming bridged request. The relay may still answer with an
@@ -735,16 +733,8 @@ func (s *Server) doForwardCodex(c *gin.Context, a *auth.Auth, path string, body 
 				mergeCodexUsage(&counts, extractCodexBackendUsageFromJSON(payload))
 			}
 			if usage.MissingUsage(counts) {
-				_ = resp.Body.Close()
-				log.Warnf("codex proxy(apikey): %s returned success without usage on bridged non-stream response — rotating to next credential", a.ID)
-				s.reportCodexAPIKeyFault(a, http.StatusBadGateway, time.Time{})
-				s.emitLog(requestlog.Record{
-					Client: clientName, ClientToken: maskClientToken(clientToken),
-					Provider: auth.ProviderOpenAI, AuthID: a.ID, AuthLabel: a.Label, AuthKind: "apikey",
-					Model: model, Stream: stream, Path: path, Status: http.StatusBadGateway,
-					DurationMs: time.Since(start).Milliseconds(), Attempts: attempts, Error: usage.MissingUsageError, AttemptOnly: true,
-				})
-				return true, false
+				outcome = usage.StreamUpstreamNoUsage
+				log.Warnf("codex proxy(apikey): %s returned success without usage on bridged non-stream response; forwarding and billing $0", a.ID)
 			}
 			converted, cerr := apicompat.ResponsesToChatCompletion(payload, model, time.Now().Unix())
 			if cerr != nil {
@@ -784,17 +774,33 @@ func (s *Server) doForwardCodex(c *gin.Context, a *auth.Auth, path string, body 
 				respBody = rewriteResponseModel(respBody, rewriteClientModel)
 			}
 			parsed := extractOpenAIUsageFromJSON(respBody)
-			if readErr != nil || usage.MissingUsage(parsed) {
+			if readErr == nil && usage.MissingUsage(parsed) {
+				// Accounting metadata is optional, but an HTML block page or an
+				// unrelated JSON object is still not an answer. Accept Responses
+				// output and legacy Chat Completions choices without usage.
+				var answer struct {
+					Output  []json.RawMessage `json:"output"`
+					Choices []json.RawMessage `json:"choices"`
+				}
+				if json.Unmarshal(respBody, &answer) != nil || (len(answer.Output) == 0 && len(answer.Choices) == 0) {
+					readErr = errors.New("upstream returned success without an OpenAI answer")
+				}
+			}
+			if readErr != nil {
 				_ = resp.Body.Close()
-				log.Warnf("codex proxy(apikey): %s returned success without usage on non-stream response; rotating to next credential", a.ID)
+				log.Warnf("codex proxy(apikey): %s non-stream response read failed; rotating to next credential", a.ID)
 				s.reportCodexAPIKeyFault(a, http.StatusBadGateway, time.Time{})
 				s.emitLog(requestlog.Record{
 					Client: clientName, ClientToken: maskClientToken(clientToken),
 					Provider: auth.ProviderOpenAI, AuthID: a.ID, AuthLabel: a.Label, AuthKind: "apikey",
 					Model: model, Stream: stream, Path: path, Status: http.StatusBadGateway,
-					DurationMs: time.Since(start).Milliseconds(), Attempts: attempts, Error: usage.MissingUsageError, AttemptOnly: true,
+					DurationMs: time.Since(start).Milliseconds(), Attempts: attempts, Error: readErr.Error(), AttemptOnly: true,
 				})
 				return true, false
+			}
+			if usage.MissingUsage(parsed) {
+				outcome = usage.StreamUpstreamNoUsage
+				log.Warnf("codex proxy(apikey): %s returned success without usage on non-stream response; forwarding and billing $0", a.ID)
 			}
 			writeResponseHeaders(c, resp)
 			c.Writer.Header().Set("Content-Type", "application/json")
@@ -810,11 +816,11 @@ func (s *Server) doForwardCodex(c *gin.Context, a *auth.Auth, path string, body 
 	// What reaches here with a >=400 status is a client-side fault (400, 404,
 	// 422 …), which by design leaves credential health untouched.
 	//
-	// Only a complete, accounted-for answer breaks a failure run. Cancellation
-	// is neutral; truncation and an in-band upstream error are still failures.
-	if resp.StatusCode < 400 && !outcome.CredentialFault() && !streamTruncated && shedLabel == "" && outcome != usage.StreamClientCanceled {
+	// Missing usage or a terminal marker is an observation, not grounds for
+	// pausing the channel. Explicit upstream error frames remain faults.
+	if resp.StatusCode < 400 && !streamTruncated && shedLabel == "" && outcome != usage.StreamClientCanceled {
 		s.recordAPIKeySuccess(a, dispatchAt)
-	} else if resp.StatusCode < 400 && !outcome.CredentialFault() && outcome != usage.StreamClientCanceled && (streamTruncated || shedLabel != "") {
+	} else if resp.StatusCode < 400 && outcome != usage.StreamClientCanceled && shedLabel != "" {
 		s.reportCodexAPIKeyFault(a, http.StatusBadGateway, time.Time{})
 	}
 
@@ -826,8 +832,7 @@ func (s *Server) doForwardCodex(c *gin.Context, a *auth.Auth, path string, body 
 	if resp.StatusCode < 400 {
 		s.usage.Record(a.ID, a.Label, counts)
 		// outcome.Billable gates on OBSERVED usage — never on an estimate. A
-		// stream the relay failed to account for costs the customer $0; the
-		// credential's breaker, not the customer's wallet, absorbs it.
+		// response without usage costs the customer $0 without cooling the key.
 		if outcome.Billable(counts) && clientToken != "" {
 			priced = s.pricing.CostWithOptions(auth.ProviderOpenAI, billingModelFor(a, model), counts, pricing.CostOptions{ServiceTier: outboundTier, ResponseServiceTier: tierObserver.Observed(), CodexOAuth: false})
 			costUSD = priced.CostUSD

@@ -3,6 +3,7 @@ package server
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -45,19 +46,40 @@ func TestClaudeChannelRejectionsAreScoped(t *testing.T) {
 	}
 }
 
-func TestMissingUsagePausesOnlyAffectedModelDespiteConcurrentSuccess(t *testing.T) {
-	a := codexAPIKeyCred("relay")
-	s := &Server{}
-	s.recordAPIKeyStreamFailure(a, "gpt-6-astra", "missing usage")
-	s.recordAPIKeySuccess(a, time.Now())
-	if !a.IsModelRateLimited(apiKeyModelScope("gpt-6-astra"), time.Now()) {
-		t.Fatal("unrelated success erased model cooldown")
-	}
-	if a.IsModelRateLimited(apiKeyModelScope("gpt-6-sol"), time.Now()) {
-		t.Fatal("unrelated model cooled")
-	}
-	if a.IsModelRateLimited(apiKeyModelScope("gpt-6-astra"), time.Now().Add(time.Minute)) {
-		t.Fatal("model cooldown did not expire")
+func TestCodexAPIKeyMissingMetadataDoesNotBlockChannel(t *testing.T) {
+	delta := "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hello\"}\n\n"
+	terminal := "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n"
+	for _, tc := range []struct {
+		name, path, contentType, response string
+		stream                            bool
+	}{
+		{"complete without usage", "/v1/responses", "text/event-stream", delta + terminal, true},
+		{"truncated without usage", "/v1/responses", "text/event-stream", delta, true},
+		{"truncated with usage", "/v1/responses", "text/event-stream", delta + "data: {\"usage\":{\"input_tokens\":10,\"output_tokens\":5}}\n\n", true},
+		{"bridged truncated", "/v1/chat/completions", "text/event-stream", delta, true},
+		{"native JSON without usage", "/v1/responses", "application/json", `{"id":"resp_1","status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"hello"}]}]}`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", tc.contentType)
+				_, _ = w.Write([]byte(tc.response))
+			}))
+			defer upstream.Close()
+			a := codexAPIKeyCred("relay")
+			s := codexAPIKeyTestServer(upstream.URL, a)
+			body := []byte(`{"model":"gpt-6-astra","input":"hello","messages":[{"role":"user","content":"hello"}]}`)
+			// Repeated observations must not accumulate into a channel cooldown.
+			for i := 0; i < 4; i++ {
+				c, w := newCodexContext(t, tc.path, body)
+				retry, done := s.doForwardCodex(c, a, tc.path, body, tc.stream, "gpt-6-astra", "test", "test", "", time.Now(), 1)
+				if retry || !done || w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "hello") {
+					t.Fatalf("response not forwarded: retry=%v done=%v status=%d body=%s", retry, done, w.Code, w.Body.String())
+				}
+				if a.IsModelRateLimited(apiKeyModelScope("gpt-6-astra"), time.Now()) || a.HealthState().State != auth.HealthHealthy {
+					t.Fatalf("metadata observation blocked channel: %+v", a.HealthState())
+				}
+			}
+		})
 	}
 }
 
