@@ -6,7 +6,7 @@
 // through `labels` (defaults to English); hypitoken passes i18n strings,
 // CPA-Claude uses the defaults. If you edit one copy, sync the other.
 // ─────────────────────────────────────────────────────────────────────────
-import { ArrowRightLeft, Check, Copy, ExternalLink, MessageSquare, Terminal } from "lucide-react";
+import { ArrowRightLeft, Check, Copy, MessageSquare, Terminal } from "lucide-react";
 import { useId, useState } from "react";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -172,18 +172,18 @@ function CCSwitchCard({
           <div className="text-sm font-medium text-foreground">{L.oneClick}</div>
           <div className="mt-0.5 text-xs text-muted-foreground">{L.oneClickHint}</div>
         </div>
-        <Button
-          type="button"
-          size="sm"
-          className="shrink-0 gap-1.5"
-          disabled={!model.trim()}
-          onClick={() => {
-            setTried(true);
-            openDeepLink(url);
-          }}
-        >
-          <ArrowRightLeft className="h-3.5 w-3.5" />
-          {L.openInCCSwitch}
+        <Button asChild size="sm" className="shrink-0 gap-1.5">
+          <a
+            href={model.trim() ? url : undefined}
+            aria-disabled={!model.trim()}
+            onClick={(event) => {
+              if (!model.trim()) event.preventDefault();
+              else setTried(true);
+            }}
+          >
+            <ArrowRightLeft data-icon="inline-start" />
+            {L.openInCCSwitch}
+          </a>
         </Button>
       </div>
 
@@ -205,37 +205,32 @@ function CCSwitchCard({
         </a>
       </div>
 
+      <div className="mt-3 flex flex-col gap-2">
+        <Input
+          aria-label={L.ccCopyLink}
+          value={url}
+          readOnly
+          onFocus={(event) => event.target.select()}
+        />
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          disabled={!model.trim()}
+          onClick={async () => {
+            await copyToClipboard(url);
+            setCopied(true);
+            setTimeout(() => setCopied(false), 1500);
+          }}
+        >
+          {copied ? <Check data-icon="inline-start" /> : <Copy data-icon="inline-start" />}
+          {copied ? L.copied : L.ccCopyLink}
+        </Button>
+      </div>
       {tried && (
         <div className="mt-3 border-t border-primary/20 pt-3">
           <div className="text-xs font-medium text-foreground">{L.ccNothingHappened}</div>
-          <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
-            {L.ccNothingHappenedHint}
-          </p>
-          <div className="mt-2 flex flex-wrap items-center gap-2">
-            <Button
-              type="button"
-              size="sm"
-              variant="outline"
-              className="h-7 gap-1.5 text-xs"
-              onClick={async () => {
-                await copyToClipboard(url);
-                setCopied(true);
-                setTimeout(() => setCopied(false), 1500);
-              }}
-            >
-              {copied ? <Check className="h-3 w-3 text-green-500" /> : <Copy className="h-3 w-3" />}
-              {copied ? L.copied : L.ccCopyLink}
-            </Button>
-            <a
-              href="https://ccswitch.io/"
-              target="_blank"
-              rel="noreferrer noopener"
-              className="inline-flex items-center gap-1 text-xs text-primary underline-offset-2 hover:underline"
-            >
-              <ExternalLink className="h-3 w-3" />
-              {L.ccGetApp}
-            </a>
-          </div>
+          <p className="mt-1 text-xs text-muted-foreground">{L.ccNothingHappenedHint}</p>
         </div>
       )}
     </div>

@@ -9,3 +9,5 @@ Validation: TypeScript/Vite production build passed. Ten onboarding tests passed
 Deployment method: standalone immutable frontend files behind Caddy; no Go rebuild, no application restart, no database migration. Only listed GET/HEAD SPA pages and existing static files are served from /srv/hypitoken-frontend/current. All API routes retain the existing upstream configuration. Missing assets fall back to the existing backend, preserving older cached frontend sessions. ops/frontend.caddy records the added site-local routes. Caddy config is validated before graceful reload; the old Caddyfile and frontend symlink are retained for rollback.
 
 This release excludes the working tree's unpublished retry, balance-monitor, status-page and merchant-error backend changes. It does not deploy the separately prepared fixed-merchant fault repair.
+
+The import action is a real `ccswitch://` anchor (not a JavaScript-only button), with a visible read-only URL and copy action before the first click. This preserves browser user activation and provides an explicit fallback when the desktop protocol handler is absent or blocked. The URL contains the user token and must not be shared.
