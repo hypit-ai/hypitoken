@@ -60,4 +60,3 @@ for (const os of ["macOS", "Linux", "Windows"] as const) {
     });
   });
 }
-
