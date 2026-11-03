@@ -16,8 +16,10 @@ This guide defaults to Codex Desktop App on native Windows. Claude Code is not r
 
 1. Install Codex Desktop App and open CC Switch.
 2. On the HypiToken [Tokens page](/app/tokens), click **Use token**. **Codex** is selected by default.
-3. Click **Open in CC Switch**, confirm the import, then enable HypiToken in CC Switch's Codex configuration.
-4. Fully quit Codex Desktop App, reopen it and start a new conversation.
+3. Click **Open in CC Switch** and confirm the import; importing does not start Routing.
+4. Preserve or restore ChatGPT sign-in as described in the [desktop guide](/docs/codex-cli), then quit Codex.
+5. Open **Codex → Routing**, click **Start routing**, choose **Route here** on HypiToken and confirm the active marker.
+6. Reopen Codex and keep CC Switch running in the background.
 
 | Setting | Value |
 | --- | --- |
@@ -40,3 +42,7 @@ Install it using the [Claude Code guide](/docs/claude-code), then select the Cla
 - **Work browser authentication prompt:** preserve ChatGPT sign-in and follow the [desktop guide](/docs/codex-cli).
 
 Terminal and WSL users should use the separate [Codex CLI guide](/docs/codex-cli-terminal).
+
+## Recommended connection mode
+
+Use **Codex → Routing → Start routing**, then choose **Route here** on HypiToken and verify the active marker. Importing alone does not start Routing. Keep ChatGPT sign-in and CC Switch running; see the [desktop guide](/docs/codex-cli) for setup, existing-session limitations and the official-quota exception. Avoid deleting login or session files to repair a conversation.

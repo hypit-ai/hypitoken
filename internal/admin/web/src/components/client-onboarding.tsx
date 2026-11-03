@@ -70,7 +70,7 @@ const DEFAULT_LABELS: OnboardingLabels = {
   orManual: "or configure manually",
   desktopTitle: "Codex Desktop App",
   desktopHint:
-    "Install Codex Desktop, import this token with CC Switch, select HypiToken, then fully quit and reopen Codex. On Windows, the config folder is %USERPROFILE%\\.codex.",
+    "Use CC Switch Routing mode: import the token, open Codex → Routing, click Start routing, and route to HypiToken. Preserve ChatGPT sign-in, then fully quit and reopen Codex.",
   desktopGuide: "Desktop setup guide",
   cliOptional: "Using Codex CLI? Show terminal setup",
   step1Install: "1. Install the CLI",

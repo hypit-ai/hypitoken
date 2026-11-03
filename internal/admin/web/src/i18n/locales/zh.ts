@@ -455,7 +455,7 @@ export default {
       primaryModel: "主模型",
       desktopTitle: "Codex Desktop App 桌面端",
       desktopHint:
-        "安装 Codex 桌面端后，用 CC Switch 导入此令牌并启用 HypiToken，再完全退出并重开 Codex。Windows 配置目录为 %USERPROFILE%\\.codex。",
+        "推荐使用 CC Switch 路由模式：导入令牌后，在 Codex 的「路由」页点击「开始路由」，将请求路由到 HypiToken；保留 ChatGPT 登录，再完全退出并重开 Codex。",
       desktopGuide: "查看桌面端配置教程",
       cliOptional: "使用 Codex CLI？展开终端配置",
       oneClick: "一键接入",
