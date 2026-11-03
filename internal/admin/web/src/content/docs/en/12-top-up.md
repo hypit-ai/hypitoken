@@ -26,4 +26,4 @@ Pick a preset or enter a custom amount — **from $1** to get started.
 
 Per-token, in real time: after each request, the cost is `input tokens × input price + output tokens × output price`, deducted from your balance. Prices vary by model — see the [Pricing](/docs/pricing) page in the console for the rates in effect.
 
-> Once topped up, head to [connect a client](/docs/claude-code) and start using it.
+> Once topped up, head to [connect a client](/docs/codex-cli) and start using it.

@@ -7,11 +7,14 @@
 // CPA-Claude uses the defaults. If you edit one copy, sync the other.
 // ─────────────────────────────────────────────────────────────────────────
 import { ArrowRightLeft, Check, Copy, ExternalLink, MessageSquare, Terminal } from "lucide-react";
-import { useState } from "react";
+import { useId, useState } from "react";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   buildCCSwitchURL,
+  CC_SWITCH_DEFAULT_MODELS,
   buildCherryStudioURL,
   claudeCodeConfig,
   claudeCodeEnv,
@@ -32,7 +35,12 @@ export interface OnboardingLabels {
   ccNothingHappenedHint: string;
   ccCopyLink: string;
   ccGetApp: string;
+  primaryModel: string;
   orManual: string;
+  desktopTitle: string;
+  desktopHint: string;
+  desktopGuide: string;
+  cliOptional: string;
   step1Install: string;
   step2Config: string;
   step2Env: string;
@@ -58,7 +66,13 @@ const DEFAULT_LABELS: OnboardingLabels = {
     'The browser hands the link to the CC Switch app; it cannot tell whether the app received it. If nothing opened, copy the link and paste it into CC Switch, or install the app first. On Linux, a package-provided "CC Switch.desktop" whose Exec line lacks %u will swallow the URL — prefer cc-switch-handler.desktop.',
   ccCopyLink: "Copy import link",
   ccGetApp: "Get CC Switch",
+  primaryModel: "Primary model",
   orManual: "or configure manually",
+  desktopTitle: "Codex Desktop App",
+  desktopHint:
+    "Install Codex Desktop, import this token with CC Switch, select HypiToken, then fully quit and reopen Codex. On Windows, the config folder is %USERPROFILE%\\.codex.",
+  desktopGuide: "Desktop setup guide",
+  cliOptional: "Using Codex CLI? Show terminal setup",
   step1Install: "1. Install the CLI",
   step2Config: "2. Configure",
   step2Env: "Environment variables (this shell)",
@@ -147,7 +161,9 @@ function CCSwitchCard({
 }) {
   const [tried, setTried] = useState(false);
   const [copied, setCopied] = useState(false);
-  const url = buildCCSwitchURL(config, app);
+  const modelId = useId();
+  const [model, setModel] = useState<string>(CC_SWITCH_DEFAULT_MODELS[app].model);
+  const url = buildCCSwitchURL(config, app, { model: model.trim() });
 
   return (
     <div className="rounded-md border border-primary/30 bg-primary/5 p-3">
@@ -160,6 +176,7 @@ function CCSwitchCard({
           type="button"
           size="sm"
           className="shrink-0 gap-1.5"
+          disabled={!model.trim()}
           onClick={() => {
             setTried(true);
             openDeepLink(url);
@@ -168,6 +185,24 @@ function CCSwitchCard({
           <ArrowRightLeft className="h-3.5 w-3.5" />
           {L.openInCCSwitch}
         </Button>
+      </div>
+
+      <div className="mt-3 flex flex-col gap-2">
+        <Label htmlFor={modelId}>{L.primaryModel}</Label>
+        <Input
+          id={modelId}
+          value={model}
+          onChange={(event) => setModel(event.target.value)}
+          required
+        />
+        <a
+          href="https://ccswitch.io/"
+          target="_blank"
+          rel="noreferrer noopener"
+          className="text-xs text-primary underline underline-offset-2"
+        >
+          {L.ccGetApp}
+        </a>
       </div>
 
       {tried && (
@@ -192,7 +227,7 @@ function CCSwitchCard({
               {copied ? L.copied : L.ccCopyLink}
             </Button>
             <a
-              href="https://ccswitch.io"
+              href="https://ccswitch.io/"
               target="_blank"
               rel="noreferrer noopener"
               className="inline-flex items-center gap-1 text-xs text-primary underline-offset-2 hover:underline"
@@ -210,13 +245,13 @@ function CCSwitchCard({
 export interface ClientOnboardingProps {
   config: OnboardingConfig;
   labels?: Partial<OnboardingLabels>;
-  /** Optional initial OS; auto-detected by the caller when omitted. */
+  /** Native Windows is the default; callers can select another OS. */
   initialOS?: OnboardingOS;
 }
 
 export function ClientOnboarding({ config, labels, initialOS }: ClientOnboardingProps) {
   const L = { ...DEFAULT_LABELS, ...labels };
-  const [os, setOS] = useState<OnboardingOS>(initialOS ?? "macOS");
+  const [os, setOS] = useState<OnboardingOS>(initialOS ?? "Windows");
 
   const install = {
     install: claudeCodeInstall(os),
@@ -242,13 +277,13 @@ export function ClientOnboarding({ config, labels, initialOS }: ClientOnboarding
     <div className="space-y-3">
       <OSPills os={os} setOS={setOS} />
 
-      <Tabs defaultValue="claude-code" className="mt-1 min-w-0">
+      <Tabs defaultValue="codex" className="mt-1 min-w-0">
         <TabsList className="w-full">
+          <TabsTrigger value="codex" className="flex-1 gap-1.5">
+            <Terminal className="h-3.5 w-3.5" /> Codex
+          </TabsTrigger>
           <TabsTrigger value="claude-code" className="flex-1 gap-1.5">
             <Terminal className="h-3.5 w-3.5" /> Claude Code
-          </TabsTrigger>
-          <TabsTrigger value="codex" className="flex-1 gap-1.5">
-            <Terminal className="h-3.5 w-3.5" /> Codex CLI
           </TabsTrigger>
         </TabsList>
 
@@ -275,20 +310,31 @@ export function ClientOnboarding({ config, labels, initialOS }: ClientOnboarding
         </TabsContent>
 
         <TabsContent value="codex" className="space-y-3 pt-2 min-w-0">
+          <div className="space-y-2 text-sm">
+            <p className="font-medium">{L.desktopTitle}</p>
+            <p className="text-muted-foreground">{L.desktopHint}</p>
+            <a href="/docs/codex-cli" className="text-primary underline underline-offset-2">
+              {L.desktopGuide}
+            </a>
+          </div>
           {ccSwitchButton("codex")}
-          {manualDivider}
-          <div className="min-w-0">
-            <p className="text-sm font-medium text-muted-foreground">{L.step1Install}</p>
-            {cb(codex.install)}
-          </div>
-          <div className="min-w-0">
-            <p className="text-sm font-medium text-muted-foreground">{L.step2Config}</p>
-            {cb(codex.config)}
-          </div>
-          <div className="min-w-0">
-            <p className="text-sm font-medium text-muted-foreground">{L.step3Run}</p>
-            {cb("codex")}
-          </div>
+          <details className="space-y-3">
+            <summary className="cursor-pointer text-sm text-muted-foreground">
+              {L.cliOptional}
+            </summary>
+            <div className="min-w-0">
+              <p className="text-sm font-medium text-muted-foreground">{L.step1Install}</p>
+              {cb(codex.install)}
+            </div>
+            <div className="min-w-0">
+              <p className="text-sm font-medium text-muted-foreground">{L.step2Config}</p>
+              {cb(codex.config)}
+            </div>
+            <div className="min-w-0">
+              <p className="text-sm font-medium text-muted-foreground">{L.step3Run}</p>
+              {cb("codex")}
+            </div>
+          </details>
         </TabsContent>
       </Tabs>
 

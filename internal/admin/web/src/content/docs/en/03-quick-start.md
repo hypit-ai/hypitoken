@@ -33,8 +33,8 @@ New accounts get trial credit to try things out. Add balance under **Billing** b
 
 Pick the client you want and follow its guide to fill in the Base URL and key:
 
+- ⚡ [**Codex Desktop App (recommended)**](/docs/codex-cli) — native Windows desktop setup
 - 🤖 [**Claude Code**](/docs/claude-code) — Anthropic's official CLI
-- ⚡ [**Codex CLI**](/docs/codex-cli) — OpenAI's official CLI, needs Node.js v22+
 - 🎯 [**Cursor**](/docs/cursor) — GUI editor, just fill a few settings fields
 
 > **Want to switch providers on the fly?** [**CCSwitch**](/docs/ccswitch) is a local credential / config manager that manages the provider config for Claude Code and Codex and switches in one click — it isn't a gateway client itself; Claude Code / Codex still make the actual requests.

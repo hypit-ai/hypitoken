@@ -445,13 +445,19 @@ export default {
     },
     useTokenDialog: {
       title: "使用此令牌",
-      sub: "选择你的工具和系统，查看预填了当前令牌的完整配置命令。",
+      sub: "默认使用原生 Windows 的 Codex Desktop App，可一键导入当前令牌。",
       step1Install: "1. 安装",
       step2Config: "2. 配置",
       step3Run: "3. 运行",
       yourToken: "你的令牌：",
     },
     onboarding: {
+      primaryModel: "主模型",
+      desktopTitle: "Codex Desktop App 桌面端",
+      desktopHint:
+        "安装 Codex 桌面端后，用 CC Switch 导入此令牌并启用 HypiToken，再完全退出并重开 Codex。Windows 配置目录为 %USERPROFILE%\\.codex。",
+      desktopGuide: "查看桌面端配置教程",
+      cliOptional: "使用 Codex CLI？展开终端配置",
       oneClick: "一键接入",
       oneClickHint:
         "CC Switch 会自动帮你写好客户端配置，无需手动改文件。需先安装 CC Switch 桌面版。",

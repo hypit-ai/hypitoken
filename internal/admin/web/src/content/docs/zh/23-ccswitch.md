@@ -1,77 +1,42 @@
 ---
 slug: ccswitch
-title: CCSwitch 凭证管理
+title: CC Switch 配置管理
 group: 辅助工具
 order: 23
-intro: CCSwitch 是一个本地凭证 / 配置管理工具，帮你管理 Claude Code、Codex 的服务商配置并一键切换，不用每次手动改环境变量。它本身不接入网关——真正发请求的仍是 Claude Code / Codex，所以前提是已装好对应的 CLI。
+intro: 使用 CC Switch 管理 Codex Desktop App 的 HypiToken 配置，也支持 Claude Code。
 ---
 
-## 开始之前请确认
+## 一、下载安装
 
-- 已注册 HypiToken 账号 + 创建密钥 + 充值（[快速上手](/docs/quick-start)）
-- **本地已装好 Claude Code**，在终端能跑 `claude --version`（[如何安装](/docs/claude-code)）
-- 能从 GitHub 或官网下载 CCSwitch 安装包
+官方网站：**[https://ccswitch.io/](https://ccswitch.io/)**。下载适合系统的安装包，安装并启动 CC Switch。
 
-> **CCSwitch 不是独立客户端**：它的作用是帮你管理 Claude Code 的配置——一键切换不同服务商，不用每次手动改环境变量。所以前提是你必须已经装好 Claude Code。
+本教程默认使用原生 Windows 的 Codex Desktop App，无需先安装 Claude Code。CC Switch 管理配置，Codex Desktop App 执行任务。
 
-## 一、关于 CCSwitch
+## 二、导入 Codex 配置
 
-CCSwitch 是一款在多个 Claude / AI 服务商之间快速切换的桌面工具。它会自动管理 Claude Code 所需的配置（`ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN`），让你无需每次手动改环境变量即可切换服务商。
+1. 安装 Codex Desktop App，并打开 CC Switch。
+2. 在 HypiToken [密钥管理](/app/tokens) 点击 **使用令牌**，默认选中 **Codex**。
+3. 点击 **在 CC Switch 中打开**，确认导入后，在 CC Switch 的 Codex 配置中启用 HypiToken。
+4. 完全退出 Codex Desktop App，重新打开并新建会话。
 
-| 项 | 值 |
+| 配置项 | 值 |
 | --- | --- |
-| 协议 | Anthropic（透传给 Claude Code） |
-| Base URL | `https://api.novadiffusion.com`（不带 `/v1`） |
-| 前置 | 本地已安装 Claude Code |
+| 名称 | HypiToken |
+| Base URL | `https://api.novadiffusion.com/v1` |
+| API Key | 你的 HypiToken 令牌 |
+| Windows 配置目录 | `%USERPROFILE%\.codex` |
 
-## 二、下载安装
+完整步骤见 [Codex Desktop App 教程](/docs/codex-cli)。切换后检查 HypiToken 请求记录，确认实际走向。
 
-去 CCSwitch 的官网或 GitHub Releases 下载对应系统的安装包。
+## 三、Claude Code（可选）
 
-<div data-tabs="install-ccswitch">
-<div data-tab="macOS">
+需要 Claude Code 时，先按 [Claude Code 教程](/docs/claude-code) 安装，再切换「使用令牌」弹窗中的 Claude Code 标签导入。它使用 `https://api.novadiffusion.com`，不带 `/v1`，不要与 Codex 的地址混用。
 
-下载 `.dmg` 拖进「应用程序」。首次启动需要授权访问 `~/.claude` 目录——若拒绝了，去「系统设置 → 隐私与安全性 → 文件夹」重新勾选。
+## 四、常见问题
 
-</div>
-<div data-tab="Windows">
+- **点击没反应**：先启动 CC Switch，再重试；或复制导入链接到 CC Switch。
+- **配置没生效**：确认启用了正确服务商，完全退出并重开桌面端。
+- **找不到配置**：在文件资源管理器地址栏输入 `%USERPROFILE%\.codex`；设置过 `CODEX_HOME` 时检查实际目录。
+- **Work browser 认证提示**：保留 ChatGPT 登录，按 [桌面端教程](/docs/codex-cli) 排查。
 
-下载 `.exe` 双击安装。启动后 CCSwitch 会自动检测本地已安装的 Claude Code。
-
-</div>
-<div data-tab="Linux">
-
-下载 AppImage：
-
-```bash
-chmod +x ccswitch-*.AppImage
-./ccswitch-*.AppImage
-```
-
-或下载 `.deb` / `.rpm` 包安装。
-
-</div>
-</div>
-
-## 三、添加 HypiToken 服务商
-
-1. 启动 CCSwitch，左侧菜单选 **Key 管理**，会看到已配置的服务商列表（默认有官方 Claude）。
-2. 点 **添加** 按钮，填写：
-   - **名称**：`HypiToken`
-   - **Base URL**：`https://api.novadiffusion.com`
-   - **API Key**：`sk-cpa-...`（你的网关 Key）
-3. 保存后会出现在服务商列表中。
-
-## 四、一键切换到 HypiToken
-
-在 Key 管理页面，点 HypiToken 这一行右侧的「⋯」（三个点）按钮，选 **CC 切换**，Claude Code 就会切换为使用 HypiToken，无需重启 CCSwitch。
-
-> **底层做了什么？** 「CC 切换」会自动改写 Claude Code 的 `~/.claude/settings.json`，设置 `ANTHROPIC_BASE_URL` 和 `ANTHROPIC_AUTH_TOKEN`，无需你手动配置。下次打开终端运行 `claude` 即走网关。
-
-## 五、常见报错排查
-
-**❌ 切换后 `claude` 仍走官方** — ① 没有重新打开终端，配置没生效；② 你的 shell 配置文件（`.zshrc` / `.bashrc`）里硬编码了 `ANTHROPIC_BASE_URL`，会覆盖 CCSwitch 的设置——去掉那行再试。
-
-**❌ CCSwitch 找不到 Claude Code** — 需要先本地安装 Claude Code。先按 [Claude Code 教程](/docs/claude-code) 装好 `claude` 命令再回来切。
-
-**❌ macOS 启动后授权失败** — 首次启动需授权访问 `~/.claude` 目录。去「系统设置 → 隐私与安全性 → 文件夹」重新勾选。
+终端和 WSL 用户请看单独的 [Codex CLI 教程](/docs/codex-cli-terminal)。

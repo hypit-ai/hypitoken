@@ -27,6 +27,11 @@ export interface OnboardingConfig {
 
 const DEFAULT_PROVIDER = "New API";
 
+// Current upstreams do not return server-side auto-mode verdicts. Use Claude
+// Code's real local classifier to avoid repeated server-fallback notices.
+// This preserves auto-mode safety checks; local classifier requests still bill.
+const CLAUDE_AUTO_MODE_SERVER = "0";
+
 /** Strip any trailing slash(es) so we never emit "https://host//v1". */
 function trimBase(baseUrl: string): string {
   return baseUrl.replace(/\/+$/, "");
@@ -44,29 +49,10 @@ export function codexBaseUrl(cfg: OnboardingConfig): string {
 
 // ── Deep links ───────────────────────────────────────────────────────────
 
-/**
- * Model defaults written into the CC Switch profile.
- *
- * These are NOT cosmetic. CC Switch fills in its own fallback for anything the
- * link leaves out, and its Codex fallback is `gpt-5-codex`
- * (src-tauri/src/deeplink/provider.rs, build_codex_settings) — a model this
- * gateway does not serve. A link without `model` therefore imports a Codex
- * profile that 404s on its first request, which reads to the user as "the
- * one-click setup is broken".
- *
- * Claude deliberately gets NO top-level `model`. CC Switch maps that to
- * ANTHROPIC_MODEL, which pins every request to one model and overrides Claude
- * Code's own tier selection — so a default there would silently bill opus
- * rates for work Claude Code would have sent to sonnet. The three tier aliases
- * below are the right shape: they map ANTHROPIC_DEFAULT_{HAIKU,SONNET,OPUS}_MODEL
- * so each tier resolves to a model this gateway actually prices, and Claude
- * Code keeps choosing between them.
- */
+/** Defaults for the user-editable primary model; URL fields follow New API. */
 export const CC_SWITCH_DEFAULT_MODELS = {
   claude: {
-    haikuModel: "claude-haiku-4-5",
-    sonnetModel: "claude-sonnet-5",
-    opusModel: "claude-opus-5-5",
+    model: "claude-sonnet-5",
   },
   codex: {
     model: "gpt-6-astra",
@@ -114,9 +100,6 @@ export function buildCCSwitchURL(
   params.set("name", opts?.name || cfg.providerName || DEFAULT_PROVIDER);
   params.set("endpoint", endpoint);
   params.set("apiKey", cfg.token);
-  params.set("homepage", base);
-  // `icon` is a lowercase slug CC Switch uses to pick the profile's badge.
-  params.set("icon", app);
 
   // An explicitly-passed "" removes a default rather than being ignored, which
   // is how a caller opts out of pinning a model at all.
@@ -126,6 +109,7 @@ export function buildCCSwitchURL(
     if (value) params.set(key, value);
   }
 
+  params.set("homepage", base);
   params.set("enabled", "true");
   return `ccswitch://v1/import?${params.toString()}`;
 }
@@ -150,11 +134,11 @@ export function openDeepLink(url: string): void {
   window.location.href = url;
 }
 
-/** UTF-8-safe base64 for the Cherry Studio payload (falls back for old runtimes). */
+/** UTF-8-safe base64 for client import payloads (falls back for old runtimes). */
 function toBase64(value: string): string {
-  if (typeof window !== "undefined" && typeof window.btoa === "function") {
-    // Payload is a URL + token (ASCII), but guard against any UTF-8 anyway.
-    return window.btoa(unescape(encodeURIComponent(value)));
+  if (typeof btoa === "function") {
+    // Provider names and custom model aliases may contain non-ASCII characters.
+    return btoa(unescape(encodeURIComponent(value)));
   }
   return "";
 }
@@ -193,10 +177,12 @@ export function claudeCodeEnv(cfg: OnboardingConfig, os: OnboardingOS): string {
   const base = claudeBaseUrl(cfg);
   if (os === "Windows") {
     return `$env:ANTHROPIC_BASE_URL="${base}"
-$env:ANTHROPIC_AUTH_TOKEN="${cfg.token}"`;
+$env:ANTHROPIC_AUTH_TOKEN="${cfg.token}"
+$env:CLAUDE_CODE_AUTO_MODE_SERVER="${CLAUDE_AUTO_MODE_SERVER}"`;
   }
   return `export ANTHROPIC_BASE_URL="${base}"
-export ANTHROPIC_AUTH_TOKEN="${cfg.token}"`;
+export ANTHROPIC_AUTH_TOKEN="${cfg.token}"
+export CLAUDE_CODE_AUTO_MODE_SERVER="${CLAUDE_AUTO_MODE_SERVER}"`;
 }
 
 /** ~/.claude/settings.json writer, per OS shell. */
@@ -205,7 +191,8 @@ export function claudeCodeConfig(cfg: OnboardingConfig, os: OnboardingOS): strin
   const json = `{
   "env": {
     "ANTHROPIC_BASE_URL": "${base}",
-    "ANTHROPIC_AUTH_TOKEN": "${cfg.token}"
+    "ANTHROPIC_AUTH_TOKEN": "${cfg.token}",
+    "CLAUDE_CODE_AUTO_MODE_SERVER": "${CLAUDE_AUTO_MODE_SERVER}"
   }
 }`;
   if (os === "Windows") {

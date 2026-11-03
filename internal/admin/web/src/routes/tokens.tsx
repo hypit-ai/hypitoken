@@ -51,13 +51,6 @@ import { apiDelete, apiGet, apiPatch, apiPost } from "@/lib/api";
 import type { Channel, UserToken } from "@/lib/types";
 import { copyToClipboard, errMsg, fmtUSD } from "@/lib/utils";
 
-function detectOS(): "Windows" | "macOS" | "Linux" {
-  const ua = navigator.userAgent;
-  if (/Windows/i.test(ua)) return "Windows";
-  if (/Mac OS X/i.test(ua)) return "macOS";
-  return "Linux";
-}
-
 export default function TokensPage() {
   const { t: tt } = useTranslation();
   const confirm = useConfirm();
@@ -464,7 +457,12 @@ function useOnboardingLabels(): OnboardingLabels {
     ccNothingHappenedHint: t("tokens.onboarding.ccNothingHappenedHint"),
     ccCopyLink: t("tokens.onboarding.ccCopyLink"),
     ccGetApp: t("tokens.onboarding.ccGetApp"),
+    primaryModel: t("tokens.onboarding.primaryModel"),
     orManual: t("tokens.onboarding.orManual"),
+    desktopTitle: t("tokens.onboarding.desktopTitle"),
+    desktopHint: t("tokens.onboarding.desktopHint"),
+    desktopGuide: t("tokens.onboarding.desktopGuide"),
+    cliOptional: t("tokens.onboarding.cliOptional"),
     step1Install: t("tokens.useTokenDialog.step1Install"),
     step2Config: t("tokens.useTokenDialog.step2Config"),
     step2Env: t("tokens.onboarding.step2Env"),
@@ -506,7 +504,7 @@ function UseTokenDialog({ token, onClose }: { token: UserToken | null; onClose: 
           <ClientOnboarding
             config={{ token: tk, baseUrl: window.location.origin, providerName: "HypiToken" }}
             labels={labels}
-            initialOS={detectOS()}
+            initialOS="Windows"
           />
         )}
       </DialogContent>

@@ -1,0 +1,23 @@
+	# HypiToken standalone frontend. API requests continue to the existing gateway.
+	@hypitoken_frontend_asset {
+		method GET HEAD
+		path /assets/* /docs-img/* /favicon.svg /arena/*
+		file {
+			root /srv/hypitoken-frontend/current
+			try_files {path}
+		}
+	}
+	handle @hypitoken_frontend_asset {
+		root * /srv/hypitoken-frontend/current
+		file_server
+	}
+	@hypitoken_frontend_page {
+		method GET HEAD
+		path / /index.html /login /register /forgot-password /appeal /join/* /pricing /status /docs /docs/* /terms /privacy /app /app/*
+	}
+	handle @hypitoken_frontend_page {
+		root * /srv/hypitoken-frontend/current
+		rewrite * /index.html
+		header Cache-Control "no-cache"
+		file_server
+	}

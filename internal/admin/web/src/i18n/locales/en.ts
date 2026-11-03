@@ -463,13 +463,19 @@ export default {
     },
     useTokenDialog: {
       title: "Use this token",
-      sub: "Choose your tool and OS to see the exact setup commands with your token pre-filled.",
+      sub: "Start with Codex Desktop App on native Windows and import this token with one click.",
       step1Install: "1. Install",
       step2Config: "2. Configure",
       step3Run: "3. Run",
       yourToken: "Your token:",
     },
     onboarding: {
+      primaryModel: "Primary model",
+      desktopTitle: "Codex Desktop App",
+      desktopHint:
+        "Install Codex Desktop, import this token with CC Switch, select HypiToken, then fully quit and reopen Codex. On Windows, the config folder is %USERPROFILE%\\.codex.",
+      desktopGuide: "Desktop setup guide",
+      cliOptional: "Using Codex CLI? Show terminal setup",
       oneClick: "One-click setup",
       oneClickHint:
         "CC Switch writes the client config for you — no manual file editing. Requires the CC Switch desktop app.",

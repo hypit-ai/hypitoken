@@ -3,7 +3,7 @@ slug: intro
 title: Overview
 group: Getting started
 order: 1
-intro: HypiToken is a unified API gateway that speaks both the OpenAI and Anthropic protocols. One key connects GPT, Claude and more across Codex CLI, Claude Code, and Cursor.
+intro: HypiToken is a unified API gateway that speaks both the OpenAI and Anthropic protocols. One key connects GPT, Claude and more across Codex Desktop App / CLI, Claude Code, and Cursor.
 ---
 
 ## What it is
@@ -16,13 +16,13 @@ Behind the scenes the gateway schedules your requests across multiple upstream s
 
 | Client | Type | Protocol | Base URL |
 | --- | --- | --- | --- |
-| Codex CLI | CLI | OpenAI | `https://api.novadiffusion.com/v1` |
+| Codex Desktop App / CLI | Desktop / CLI | OpenAI | `https://api.novadiffusion.com/v1` |
 | Claude Code | CLI | Anthropic | `https://api.novadiffusion.com` |
 | Cursor | GUI | OpenAI | `https://api.novadiffusion.com/v1` |
 
 > **About the trailing `/v1`**
 >
-> The Anthropic protocol (Claude Code) does **not** take `/v1`; the OpenAI protocol (Codex CLI, Cursor) **must** include `/v1`. This is the single most common cause of 404s.
+> The Anthropic protocol (Claude Code) does **not** take `/v1`; the OpenAI protocol (Codex Desktop App / CLI, Cursor) **must** include `/v1`. This is the single most common cause of 404s.
 
 > **CCSwitch is not a gateway client.** It's a local credential / config manager that switches the provider config for Codex and Claude Code in one click — the actual requests are still made by Codex / Claude Code. See [CCSwitch credential manager](/docs/ccswitch).
 
@@ -31,7 +31,7 @@ Behind the scenes the gateway schedules your requests across multiple upstream s
 The gateway only accepts **interactive AI coding clients**. Raw SDK and scripting callers are rejected at ingress with `403 client not allowed`:
 
 - ❌ Blocked: OpenAI / Anthropic official SDKs, LiteLLM, `curl`, `python-requests`, Postman, scraping scripts
-- ✅ Allowed: Codex CLI, Claude Code, Cursor, Claude Desktop and other normal interactive clients
+- ✅ Allowed: Codex Desktop App / CLI, Claude Code, Cursor, Claude Desktop and other normal interactive clients
 
 In other words you **cannot** "just test the endpoint with `curl`" — it gets rejected. Connect with one of the official clients below.
 

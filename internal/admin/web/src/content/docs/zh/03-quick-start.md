@@ -33,8 +33,8 @@ intro: 一个从零开始的最短路径，每一步都对应一个详细子页�
 
 挑你想用的客户端，按对应教程填入 Base URL 和 Key 即可：
 
+- ⚡ [**Codex Desktop App（推荐）**](/docs/codex-cli) — 原生 Windows 桌面端接入
 - 🤖 [**Claude Code**](/docs/claude-code) — Anthropic 官方 CLI
-- ⚡ [**Codex CLI**](/docs/codex-cli) — OpenAI 官方 CLI，需要 Node.js v22+
 - 🎯 [**Cursor**](/docs/cursor) — GUI 编辑器，设置页填几个字段就行
 
 > **想随时切换服务商？** [**CCSwitch**](/docs/ccswitch) 是一个本地凭证 / 配置管理工具，帮你管理 Claude Code、Codex 的服务商配置并一键切换——它本身不是接入网关的客户端，真正发请求的仍是 Claude Code / Codex。
